@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>ai.onehouse</groupId>
-  <artifactId>lake-hoader</artifactId>
+  <artifactId>lake-loader</artifactId>
   <version>0.1</version>
   <packaging>jar</packaging>
 
@@ -18,6 +18,8 @@
     <scala.version>2.12.10</scala.version>
     <scala.libversion>2.12</scala.libversion>
     <hudi.version>1.0.2</hudi.version>
+    <iceberg.version>1.9.0</iceberg.version>
+    <delta.version>3.3.0</delta.version>
   </properties>
 
   <build>
@@ -114,8 +116,14 @@
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
-      <artifactId>iceberg-spark-runtime-3.2_2.12</artifactId>
-      <version>0.13.1</version>
+      <artifactId>iceberg-core</artifactId>
+      <version>${iceberg.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-spark-runtime-3.5_2.12</artifactId>
+      <version>${iceberg.version}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -140,18 +148,6 @@
       <groupId>com.beust</groupId>
       <artifactId>jcommander</artifactId>
       <version>1.72</version>
-    </dependency>
-    <dependency>
-      <groupId>io.delta</groupId>
-      <artifactId>delta-core_2.12</artifactId>
-      <version>1.2.0</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.iceberg</groupId>
-      <artifactId>iceberg-core</artifactId>
-      <version>0.13.1</version>
-      <scope>provided</scope>
     </dependency>
   </dependencies>
 </project>
