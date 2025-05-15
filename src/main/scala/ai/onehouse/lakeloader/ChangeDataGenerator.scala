@@ -14,9 +14,9 @@
 
 package ai.onehouse.lakeloader
 
-import ai.onehouse.lakeloader.ChangeDataGenerator.{KeyTypes, UpdatePatterns, expectedCompressionRatio, genParallelRDD}
+import ai.onehouse.lakeloader.ChangeDataGenerator.{COMPRESSION_RATIO_GUESS, KeyTypes, UpdatePatterns, genParallelRDD}
 import ai.onehouse.lakeloader.ChangeDataGenerator.KeyTypes.KeyType
-import ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns.{Uniform, UpdatePatterns}
+import ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns.{Uniform, UpdatePatterns, Zipf}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CatalystUtil.partitionLocalLimit
@@ -32,8 +32,8 @@ import java.util.UUID.randomUUID
 import scala.util.Random
 
 /**
- * Class that can generate workload, based on advanced criteria like insert vs update ratios, spread across
- * partitions.
+ * Class that can generates the workload based on advanced criteria like insert vs update ratios & update
+ * and insert patterns (spread across partitions).
  *
  * @param spark     Spark's session
  * @param numRounds number of runs of workload generation and the measured operation
@@ -43,65 +43,17 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
   private val SEED: Long = 378294793957830L
   private val random = new Random(SEED)
 
-  private final val CITY_NAMES: Array[String] = Array(
-    "New York City", "Los Angeles", "Chicago", "Houston", "Phoenix",
-    "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose",
-    "Austin", "Jacksonville", "Fort Worth", "Columbus", "Charlotte",
-    "Indianapolis", "San Francisco", "Seattle", "Denver", "Washington D.C.",
-    "Boston", "El Paso", "Nashville", "Detroit", "Oklahoma City",
-    "Portland", "Las Vegas", "Memphis", "Louisville", "Baltimore",
-    "Milwaukee", "Albuquerque", "Tucson", "Fresno", "Sacramento",
-    "Kansas City", "Atlanta", "Miami", "Colorado Springs", "Raleigh",
-    "Omaha", "Long Beach", "Virginia Beach", "Oakland", "Minneapolis",
-    "Tulsa", "Arlington", "Tampa", "New Orleans", "Wichita",
-    "Cleveland", "Bakersfield", "Aurora", "Anaheim", "Honolulu",
-    "Santa Ana", "Riverside", "Corpus Christi", "Lexington", "Stockton",
-    "Henderson", "St. Paul", "St. Louis", "Cincinnati", "Pittsburgh",
-    "Greensboro", "Anchorage", "Plano", "Lincoln", "Orlando",
-    "Irvine", "Newark", "Durham", "Chula Vista", "Toledo",
-    "Fort Wayne", "St. Petersburg", "Laredo", "Jersey City", "Chandler",
-    "Madison", "Lubbock", "Scottsdale", "Reno", "Buffalo",
-    "Gilbert", "Glendale", "North Las Vegas", "Winston-Salem", "Chesapeake",
-    "Norfolk", "Fremont", "Garland", "Irving", "Hialeah",
-    "Richmond", "Boise", "Spokane", "Baton Rouge", "Tacoma"
-  )
-  private final val COUNTRY_NAMES: Array[String] = Array(
-    "United States", "China", "India", "Brazil", "Russia",
-    "Japan", "Germany", "United Kingdom", "France", "Italy",
-    "Canada", "South Korea", "Australia", "Spain", "Mexico",
-    "Indonesia", "Netherlands", "Saudi Arabia", "Turkey", "Switzerland",
-    "Poland", "Sweden", "Belgium", "Thailand", "Ireland",
-    "Argentina", "Norway", "Austria", "Nigeria", "Israel",
-    "South Africa", "Singapore", "Malaysia", "Egypt", "Colombia",
-    "Denmark", "Philippines", "Pakistan", "Chile", "Finland",
-    "Portugal", "Vietnam", "Czech Republic", "Romania", "New Zealand",
-    "Peru", "Greece", "Hungary", "Kazakhstan", "Ukraine",
-    "Algeria", "Qatar", "Morocco", "Kuwait", "Ecuador",
-    "Slovakia", "Kenya", "Ethiopia", "Ghana", "Puerto Rico",
-    "Oman", "Venezuela", "Guatemala", "Dominican Republic", "Lithuania",
-    "Uruguay", "Costa Rica", "Luxembourg", "Panama", "Bulgaria",
-    "Croatia", "Lebanon", "Slovenia", "Tunisia", "Jordan",
-    "Bahrain", "Latvia", "Estonia", "Cyprus", "Iceland",
-    "El Salvador", "Trinidad and Tobago", "Bolivia", "Paraguay", "Cambodia",
-    "Nepal", "Cameroon", "Honduras", "Myanmar", "Senegal",
-    "Uzbekistan", "Azerbaijan", "Tanzania", "Serbia", "Georgia",
-    "Uganda", "Ivory Coast", "Mongolia", "Belarus", "Albania"
-  )
-  private final val CITY_INDEX_MAP: Map[String, Int] = CITY_NAMES.zipWithIndex.toMap
-
   import spark.implicits._
 
-  // To do: fix the num fields, since we require a min set.
-  private def getSchema(numFields: Int = 11): StructType = {
+  // Currently only supports flat schema.
+  private def getSchema(numFields: Int = 10): StructType = {
+    // First 4 fields are fixed: primary key, partition key, round id, and timestamp.
     val fields = Seq(
       StructField("key", StringType, nullable = false),
       StructField("partition", StringType, nullable = false),
       StructField("round", IntegerType, nullable = false),
       StructField("ts", LongType, nullable = false),
-      StructField("ts2", LongType, nullable = false),
-      StructField("city", StringType, nullable = true),
-      StructField("country", StringType, nullable = true),
-    ) ++ (0 until numFields - 7)
+    ) ++ (0 until numFields - 4)
       .map(i => {
         i % 10 match {
           case 0 => StructField(s"textField1$i", StringType, nullable = true)
@@ -119,12 +71,12 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
     StructType(fields)
   }
 
-  private def newRecord(round: Int,
-                        size: Int,
-                        partitionPaths: List[String],
-                        partitionDistributionCDF: List[Double],
-                        keyType: KeyType,
-                        schema: StructType) = {
+  private def generateNewRecord(round: Int,
+                                size: Int,
+                                partitionPaths: List[String],
+                                partitionDistributionCDF: List[Double],
+                                keyType: KeyType,
+                                schema: StructType) = {
     val ts = System.currentTimeMillis()
     // To induce (semi-) ordering on the keys we simply prefix its random part (UUID) w/ a ts;
     //
@@ -146,9 +98,6 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
           case "partition" => partitionPaths(MathUtils.sampleFromCDF(partitionDistributionCDF, random.nextDouble()))
           case "round" => round
           case "ts" => ts
-          case "ts2" => ts
-          case "city" => CITY_NAMES(random.nextInt(CITY_NAMES.length))
-          case "country" => COUNTRY_NAMES(random.nextInt(COUNTRY_NAMES.length))
           case randomField => if (randomField.startsWith("textField")) {
             StringUtils.generateRandomString(sizeFactor + random.nextInt(sizeFactor))
           } else if (randomField.startsWith("decimalField")) {
@@ -171,38 +120,38 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
   }
 
   /**
-   * Pre-generates the workload ahead of time, for the configured number of rounds.
+   * Executes the spark DAG to generate the workload ahead of time, for the configured number of rounds.
    *
    * @param path                           path to place generated input local_workloads at
    * @param roundsDistribution             total number of records to generate per round
+   * @param numColumns                      total number of columns in the schema
    * @param recordSize                     size of each record in bytes
    * @param updateRatio                    ratio of updates in the batch (remaining will be inserts)
-   * @param partitionDistributionMatrixOpt defines to-be-generated records' distribution across partitions (for every round)
-   * @param roundsSamplingRatios           fraction of generated records that should belong to a given prior round
+   * @param totalPartitions                Number of total partitions
+   * @param partitionDistributionMatrixOpt defines to-be-generated new records' distribution across partitions (for every round)
    * @param targetDataFileSize             data file size hint that data generation will aim to produce
    * @param skipIfExists                   should skip generation for the rounds possibly generated during previous
-   *                                       runs (false by default)
+   * @param keyType                        format for generating the primary key
+   * @param startRound                     round to start generating from, default 0.
+   * @param updatePatterns                 Update pattern for generating updates: random (uniform) or zipf (skewed).
+   * @param numPartitionsToUpdate          Number of partitions to update (default 1)
    */
   def generateWorkload(path: String,
-                       roundsDistribution: List[Long] = List.fill(numRounds)(1000000),
-                       numFields: Int = 11,
+                       roundsDistribution: List[Long] = List.fill(numRounds)(1000000L),
+                       numColumns: Int = 10,
                        recordSize: Int = 1024,
                        updateRatio: Double = 0.5f,
-                       totalPartitions: Int = -1,
+                       totalPartitions: Int = 1,
                        partitionDistributionMatrixOpt: Option[List[List[Double]]] = None,
-                       roundsSamplingRatios: List[Double] = List(1.0f),
                        targetDataFileSize: Int = 128 * 1024 * 1024,
                        skipIfExists: Boolean = false,
                        keyType: KeyType = KeyTypes.Random,
-                       generateUpdatesFromInsertsOnly: Boolean = true,
                        startRound: Int = 0,
                        updatePatterns: UpdatePatterns = UpdatePatterns.Uniform,
-                       numPartitionsToUpdate: Int = 20): Unit = {
-    assert(roundsSamplingRatios.isEmpty || (roundsSamplingRatios.sum - 1.0) < 1e-5)
+                       numPartitionsToUpdate: Int = 1): Unit = {
     assert(totalPartitions != -1 || partitionDistributionMatrixOpt.isDefined)
-    if (!generateUpdatesFromInsertsOnly) {
-      assert(roundsSamplingRatios.size == 1)
-    }
+    assert(numColumns > 5, "The number of columns needs to be above 5 since we need at least 4 cols for key, partition, round, and timestamp.")
+    assert(numPartitionsToUpdate <= totalPartitions, "the number of partitions to update should be lower than the total partitions")
 
     // Compute records distribution matrix across partitions; such matrix
     // could be explicitly provided as an optional parameter prescribing corresponding
@@ -211,7 +160,7 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
       genPartitionsDistributionMatrix(totalPartitions, partitionDistributionMatrixOpt)
 
     val partitionPaths = genDateBasedPartitionValues(targetPartitionsCount)
-    val schema = getSchema(numFields)
+    val schema = getSchema(numColumns)
 
     ////////////////////////////////////////
     // Generating workload
@@ -234,7 +183,7 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
         val numUpdates = if (curRound == 0) 0 else Math.min((updateRatio * targetRecords).toLong, curRound * targetRecords)
         val numInserts = targetRecords - numUpdates
 
-        val targetParallelism = Math.max(2, (targetRecords / (targetDataFileSize / (recordSize * expectedCompressionRatio))).toInt)
+        val targetParallelism = Math.max(2, (targetRecords / (targetDataFileSize / (recordSize * COMPRESSION_RATIO_GUESS))).toInt)
 
         println(
           s"""
@@ -245,27 +194,22 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
              |""".stripMargin)
 
         ////////////////////////////////////////
-        // Generating updates
+        // Generating updates based on distribution type.
         ////////////////////////////////////////
-        // First, we generate updates by sampling records from previous rounds as
-        // specified by [[roundsSpread]]
-        val rawUpdatesDF = if (updatePatterns.equals(Uniform)) {
-          genRandomUpdates(roundsSamplingRatios, curRound, numUpdates, updateRatio, path, generateUpdatesFromInsertsOnly)
-        } else {
-          getZipfRandomUpdates(partitionPaths, numUpdates, numPartitionsToUpdate, path, curRound)
+        val rawUpdatesDF = updatePatterns match {
+          case Uniform =>
+            getRandomlyDistributedUpdates(partitionPaths, numUpdates, numPartitionsToUpdate, path, curRound)
+          case Zipf =>
+            getZipfDistributedUpdates(partitionPaths, numUpdates, numPartitionsToUpdate, path, curRound)
+          case _ =>
+            throw new IllegalArgumentException(s"Unsupported update pattern: $updatePatterns")
         }
 
-        val changeCityName = udf((cityName: String) => CITY_NAMES((CITY_INDEX_MAP(cityName) + 1) % CITY_NAMES.length))
         val newTs = System.currentTimeMillis()
-
-        var finalUpdatedDf = rawUpdatesDF
+        // Update the timestamp and current round for the updated record.
+        val finalUpdatedDf = rawUpdatesDF
           .withColumn("ts", lit(newTs))
           .withColumn("round", lit(curRound))
-        finalUpdatedDf = if (curRound % 3 == 1) {
-          finalUpdatedDf.withColumn("city", changeCityName(col("city")))
-        } else {
-          finalUpdatedDf
-        }
 
         // NOTE: Applying this limit does not guarantee that exactly N elements will be contained in the
         //       returned dataset, since it might not be applying Spark's [[GlobalLimit]] operator.
@@ -280,10 +224,9 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
         ////////////////////////////////////////
 
         val insertsRDD = genParallelRDD(spark, targetParallelism, 0, numInserts)
-          .map(_ => newRecord(curRound, recordSize, partitionPaths, partitionDistributionCDF, keyType, schema))
+          .map(_ => generateNewRecord(curRound, recordSize, partitionPaths, partitionDistributionCDF, keyType, schema))
 
         val insertsDF = spark.createDataFrame(insertsRDD, schema)
-
         val upsertDF = if (numUpdates == 0) insertsDF else insertsDF.union(updatesDF)
 
         spark.time {
@@ -294,19 +237,20 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
             .mode(SaveMode.Overwrite)
             .save(targetLocation)
         }
+
+        spark.catalog.clearCache()
       }
     })
   }
 
-  private def getZipfRandomUpdates(partitionPaths: List[String],
-                                   numUpdateRecords: Long,
-                                   numPartitionsToWrite: Int,
-                                   path: String,
-                                   currentRound: Int): DataFrame = {
+  private def getZipfDistributedUpdates(partitionPaths: List[String],
+                                        numUpdateRecords: Long,
+                                        numPartitionsToWrite: Int,
+                                        path: String,
+                                        currentRound: Int): DataFrame = {
     val numRecordsPerPartition: List[Int] = MathUtils.zipfDistribution(numUpdateRecords, numPartitionsToWrite)
     val partitionsToUpdate = partitionPaths.take(numPartitionsToWrite)
-    println(s"Partitions To Update round # $currentRound: Partitions $partitionsToUpdate")
-    println(s"Partitions To Update WITH Counts round # $currentRound: NumRecordsPerPartition $numRecordsPerPartition")
+    println(s"Generating zipf distributed updates from partitions for round # $currentRound: Partitions $partitionsToUpdate")
 
     var sourceDf = spark.read.format(ChangeDataGenerator.DEFAULT_DATA_GEN_FORMAT).load(s"$path/*")
     sourceDf = sourceDf.filter(col("partition").isin(partitionsToUpdate: _*))
@@ -337,7 +281,6 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
         val ratio = 1.0 * desiredCount.toDouble / totalRecords.toDouble
         partition -> ratio
     }
-    println(s"SamplingRatios for round # $currentRound: samplingRatios $samplingRatios")
 
     var fullPlan = spark.emptyDataFrame
     var count: Int = 0
@@ -358,49 +301,25 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
     joinedDf
   }
 
-  private def genRandomUpdates(roundsSamplingRatios: List[Double],
-                               curRound: Int,
-                               numUpdates: Long,
-                               updateRatio: Double,
-                               path: String,
-                               generateUpdatesFromInsertsOnly: Boolean): DataFrame = {
-    val roundsToSample = (Math.max(0, curRound - roundsSamplingRatios.size) until curRound)
-    // NOTE: To make sure we always generate appropriate number of updates, we will have to
-    //       make sure that our sampling ratios always sum to 1. To make sure this is the case
-    //       in case we need to sample from a fewer rounds, we will re-normalize our sampling ratios
-    //       to make sure they still sum up to 1.
-    val normalizedRoundsSamplingRatios = if (roundsSamplingRatios.size > roundsToSample.size) {
-      MathUtils.normalize(roundsSamplingRatios.take(roundsToSample.size))
-    } else {
-      roundsSamplingRatios
-    }
+  private def getRandomlyDistributedUpdates(partitionPaths: List[String],
+                                            numUpdateRecords: Long,
+                                            numPartitionsToWrite: Int,
+                                            path: String,
+                                            currentRound: Int): DataFrame = {
+    val partitionsToUpdate = partitionPaths.take(numPartitionsToWrite)
+    println(s"Generating random updates from partitions for round # $currentRound: Partitions $partitionsToUpdate")
 
-    roundsToSample
-      .map(sourceRound => {
-        val sourceRoundRatio = normalizedRoundsSamplingRatios(curRound - sourceRound - 1)
-        val updatesFromRound = (numUpdates * sourceRoundRatio).toLong
+    var sourceDf = spark.read.format(ChangeDataGenerator.DEFAULT_DATA_GEN_FORMAT).load(s"$path/*")
+    sourceDf = sourceDf.filter(col("partition").isin(partitionsToUpdate: _*))
+    sourceDf.persist()
+    val totalRecords = sourceDf.count()
+    println(s"Number of updates total records for round # $currentRound: COUNT $totalRecords")
 
-        println(s"Collecting records to update from prior round # $sourceRound: fraction $sourceRoundRatio, updatesFromRound $updatesFromRound")
-
-        var sourceRoundDF = spark.read.format(ChangeDataGenerator.DEFAULT_DATA_GEN_FORMAT).load(s"$path/$sourceRound")
-        sourceRoundDF.printSchema()
-        val filteredSourceRoundDF = if (generateUpdatesFromInsertsOnly) {
-          sourceRoundDF.filter(s"substr(key, 0, 3) = $sourceRound")
-          sourceRoundDF.filter(s"substr(key, length(key) - 2, 3) = '%03d'".format(sourceRound))
-        } else {
-          sourceRoundDF
-        }
-        val sourceRoundFilterRatio = 1.0 * filteredSourceRoundDF.count() / sourceRoundDF.count()
-
-        val samplingRatio = updateRatio * sourceRoundRatio
-        val adjustedSamplingRatio = samplingRatio / sourceRoundFilterRatio
-
-        val finalDF = filteredSourceRoundDF
-          // NOTE: We should not be filtering out records as it will reduce number of updated records we sample
-          .sample(adjustedSamplingRatio)
-        finalDF
-      })
-      .foldLeft(spark.emptyDataFrame)((d1, d2) => if (d1.isEmpty) d2 else d1.union(d2))
+    val samplingRatio = 1.0 * numUpdateRecords.toDouble / totalRecords.toDouble
+    val finalDF = sourceDf
+      // NOTE: We should not be filtering out records as it will reduce number of updated records we sample
+      .sample(samplingRatio)
+    finalDF
   }
 
   private def genDateBasedPartitionValues(targetPartitionsCount: Int): List[String] = {
@@ -431,23 +350,24 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
   }
 }
 
-case class Config(outputPath: String = "",
-                  numberOfRounds: Int = 10,
-                  numberColumns: Int = 10,
-                  recordSize: Int = 1024,
-                  updateRatio: Double = 0.5f,
-                  totalPartitions: Int = 1,
-                  targetDataFileSize: Int = 128 * 1024 * 1024,
-                  skipIfExists: Boolean = false,
-                  startRound: Int = 0,
-                  keyType: KeyType = KeyTypes.Random,
-                  updatePattern: UpdatePatterns = UpdatePatterns.Uniform,
-                  numPartitionsToUpdate: Int = 20
+case class DatagenConfig(outputPath: String = "",
+                         numberOfRounds: Int = 10,
+                         numberRecordsPerRound: Long = 1000000,
+                         numberColumns: Int = 10,
+                         recordSize: Int = 1024,
+                         updateRatio: Double = 0.5f,
+                         totalPartitions: Int = 1,
+                         targetDataFileSize: Int = 128 * 1024 * 1024,
+                         skipIfExists: Boolean = false,
+                         startRound: Int = 0,
+                         keyType: KeyType = KeyTypes.Random,
+                         updatePattern: UpdatePatterns = UpdatePatterns.Uniform,
+                         numPartitionsToUpdate: Int = 20
                  )
 
 object ChangeDataGenerator {
 
-  val expectedCompressionRatio = .66
+  val COMPRESSION_RATIO_GUESS = .66
   val DEFAULT_DATA_GEN_FORMAT: String = "parquet"
 
   object KeyTypes extends Enumeration {
@@ -480,7 +400,7 @@ object ChangeDataGenerator {
       }
     }
 
-    val parser = new scopt.OptionParser[Config]("ChangeDataGeneratorApp") {
+    val parser = new scopt.OptionParser[DatagenConfig]("ChangeDataGeneratorApp") {
       head("change data generator usage")
 
       opt[String]('p', "path")
@@ -492,9 +412,13 @@ object ChangeDataGenerator {
         .action((x, c) => c.copy(numberOfRounds = x))
         .text("Number of rounds of incremental change data to generate. Default 10.")
 
+      opt[Long]("number-records-per-round")
+        .action((x, c) => c.copy(numberRecordsPerRound = x))
+        .text("Number of columns in schema of generated data. Default: 1000000.")
+
       opt[Int]("number-columns")
         .action((x, c) => c.copy(numberColumns = x))
-        .text("Number of columns in schema of generated data.")
+        .text("Number of columns in schema of generated data. Default: 10, minimum 5.")
 
       opt[Int]("record-size")
         .action((x, c) => c.copy(recordSize = x))
@@ -533,28 +457,22 @@ object ChangeDataGenerator {
         .text("Number of partitions that should have at least 1 records written to.")
     }
 
-    parser.parse(args, Config()) match {
+    parser.parse(args, DatagenConfig()) match {
       case Some(config) =>
         val spark = SparkSession.builder
           .appName("ChangeDataGeneratorApp")
           .getOrCreate()
         val changeDataGenerator = new ChangeDataGenerator(spark, config.numberOfRounds)
         changeDataGenerator.generateWorkload(config.outputPath,
-          // RM: todo, get from a file?
-          List.fill(config.numberOfRounds)(1000000),
+          List.fill(config.numberOfRounds)(config.numberRecordsPerRound),
           config.numberColumns,
           config.recordSize,
           config.updateRatio,
           config.totalPartitions,
-          // RM: Should we remove partition distribution per round? For inserts, we can just have a single list which gets applied to all rounds.??
           None,
-          // RM: todo, get from a file?
-          List(1.0f),
           config.targetDataFileSize,
           config.skipIfExists,
           config.keyType,
-          // RM: Should we remove this, since random updates needs to be fixed to decouple from inserts.
-          true,
           config.startRound,
           config.updatePattern,
           config.numPartitionsToUpdate

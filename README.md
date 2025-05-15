@@ -49,10 +49,9 @@ val partitionDistribution:List[List[Double]] = List(List.fill(365)(1.0/365)) ++ 
 val datagen = new ChangeDataGenerator(spark, numRounds = numRounds)
 datagen.generateWorkload(input_path,
                          roundsDistribution = List(1000000000L) ++ List.fill(numRounds-1)(10000000L),
-                         numFields = 40,
+                         numColumns = 40,
                          recordSize = 1000,
                          updateRatio = 0.25f,
-                         roundsSamplingRatios = List.fill(1)(1f),
                          totalPartitions = 365,
                          partitionDistributionMatrixOpt = Some(partitionDistribution),
                          updatePatterns=UpdatePatterns.Zipf,
@@ -78,10 +77,9 @@ val numRounds = 20
 val datagen = new ChangeDataGenerator(spark, numRounds = numRounds)
 datagen.generateWorkload(input_path,
                          roundsDistribution = List(100000000L) ++ List.fill(numRounds-1)(500000L),
-                         numFields = 99,
+                         numColumns = 99,
                          recordSize = 1000,
                          updateRatio = 0.5f,
-                         roundsSamplingRatios = List.fill(20)(0.05f),
                          totalPartitions = 1,
                          updatePatterns=UpdatePatterns.Random)
 ```
@@ -107,11 +105,11 @@ val partitionDistribution:List[List[Double]] = List(List.fill(numPartitions)(1.0
 val datagen = new ChangeDataGenerator(spark, numRounds = numRounds)
 datagen.generateWorkload(input_path,
                          roundsDistribution = List(10000000000L) ++ List.fill(numRounds-1)(50000000L),
-                         numFields = 30,
+                         numColumns = 30,
                          recordSize = 200,
                          updateRatio = 0.0f,
                          totalPartitions = 1095,
-                         updatePatterns=UpdatePatterns.Random)
+                         partitionDistributionMatrixOpt = Some(partitionDistribution))
 ```
 
 ### Instructions to load data for Apache Hudi
