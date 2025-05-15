@@ -20,6 +20,7 @@
     <hudi.version>1.0.2</hudi.version>
     <iceberg.version>1.9.0</iceberg.version>
     <delta.version>3.3.0</delta.version>
+    <scopt.version>4.1.0</scopt.version>
   </properties>
 
   <build>
@@ -107,6 +108,11 @@
       <groupId>log4j</groupId>
       <artifactId>log4j</artifactId>
       <version>${log4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.github.scopt</groupId>
+      <artifactId>scopt_2.12</artifactId>
+      <version>${scopt.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hudi</groupId>
