@@ -31,7 +31,7 @@ generate datasets that can produce **FACT** tables (Zipfian pattern for updates)
 The following generates dateset for a 1TB **FACT** table with 
 - 365 partitions based on date
 - 1B records
-- 30 column schema
+- 40 column schema
 - record size of almost 1KB
 - 25% of an incremental batch is updates, 75% are new records.
 - updates are distributed across partitions in a zipf distribution, with most updates in the latest partitions.
