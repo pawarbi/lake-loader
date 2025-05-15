@@ -184,7 +184,7 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
    *                                       runs (false by default)
    */
   def generateWorkload(path: String,
-                       roundsDistribution: List[Int] = List.fill(numRounds)(1000000),
+                       roundsDistribution: List[Long] = List.fill(numRounds)(1000000),
                        numFields: Int = 11,
                        recordSize: Int = 1024,
                        updateRatio: Double = 0.5f,
@@ -536,7 +536,7 @@ object ChangeDataGenerator {
     parser.parse(args, Config()) match {
       case Some(config) =>
         val spark = SparkSession.builder
-          .appName("My Spark Application")
+          .appName("ChangeDataGeneratorApp")
           .getOrCreate()
         val changeDataGenerator = new ChangeDataGenerator(spark, config.numberOfRounds)
         changeDataGenerator.generateWorkload(config.outputPath,
