@@ -14,7 +14,8 @@
 
 package ai.onehouse.lakeloader.utils
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.storage.StorageLevel
 
 object SparkUtils {
 
@@ -29,6 +30,15 @@ object SparkUtils {
 
     spark.time {
       spark.sql(sql).show()
+    }
+  }
+
+  def withPersisted[T](df: DataFrame)(block: => T): T = {
+    df.persist(StorageLevel.MEMORY_ONLY)
+    try {
+      block
+    } finally {
+      df.unpersist()
     }
   }
 }

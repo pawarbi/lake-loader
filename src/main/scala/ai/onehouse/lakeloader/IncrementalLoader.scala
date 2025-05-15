@@ -14,7 +14,9 @@ package ai.onehouse.lakeloader
  * limitations under the License.
  */
 
-import ai.onehouse.lakeloader.DataLoader._
+import ai.onehouse.lakeloader.IncrementalLoader._
+import ai.onehouse.lakeloader.IncrementalLoader.ApiType
+import ai.onehouse.lakeloader.StorageFormat.{Delta, Hudi, Iceberg, Parquet}
 import org.apache.hadoop.fs.Path
 import org.apache.hudi.DataSourceWriteOptions
 import org.apache.hudi.config.HoodieWriteConfig
@@ -23,25 +25,26 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
-import ai.onehouse.lakeloader.utils.SparkUtils.executeSparkSql
+import ai.onehouse.lakeloader.utils.SparkUtils.{executeSparkSql, withPersisted}
+import ai.onehouse.lakeloader.utils.StringUtils
 import ai.onehouse.lakeloader.utils.StringUtils.lineSepBold
 import io.delta.tables.DeltaTable
 
 import java.io.Serializable
 import scala.collection.mutable.ListBuffer
 
-class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Serializable {
+class IncrementalLoader(val spark: SparkSession, val numRounds: Int = 10) extends Serializable {
 
   private def tryCreateTable(schema: StructType,
                              outputPath: String,
-                             format: String,
+                             format: StorageFormat,
                              opts: Map[String, String],
                              nonPartitioned: Boolean,
                              scenarioId: String): Unit = {
 
     val tableName = format match {
-      case "hudi" => genHudiTableName(scenarioId)
-      case "iceberg" => genIcebergTableName(scenarioId)
+      case Hudi => genHudiTableName(scenarioId)
+      case Iceberg => genIcebergTableName(scenarioId)
     }
     val escapedTableName = escapeTableName(tableName)
     val targetPath = s"$outputPath/${tableName.replace('.', '/')}"
@@ -50,7 +53,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
 
     val serializedOpts = opts.map { case (k, v) => s"'$k'='$v'" }.mkString(",")
     val createTableSql = format match {
-      case "hudi" =>
+      case StorageFormat.Hudi =>
         s"""
            |CREATE TABLE $escapedTableName (
            |  ${schema.toDDL}
@@ -66,7 +69,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
            |${if (nonPartitioned) "" else "PARTITIONED BY (partition)"}
            |""".stripMargin
 
-      case "iceberg" =>
+      case StorageFormat.Iceberg =>
         s"""
            |CREATE TABLE $escapedTableName (
            |  ${schema.toDDL}
@@ -86,14 +89,14 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
     executeSparkSql(spark, createTableSql)
   }
 
-  private def dropTableIfExists(format:String, escapedTableName: String, targetPathStr: String): Unit = {
+  private def dropTableIfExists(format: StorageFormat, escapedTableName: String, targetPathStr: String): Unit = {
     format match {
-      case "iceberg" =>
+      case StorageFormat.Iceberg =>
         // Since Iceberg persists its catalog information w/in the manifest it's sufficient to just
         // drop the table from SQL
         executeSparkSql(spark, s"DROP TABLE IF EXISTS $escapedTableName PURGE")
 
-      case "hudi" =>
+      case StorageFormat.Hudi =>
         executeSparkSql(spark, s"DROP TABLE IF EXISTS $escapedTableName PURGE")
 
         val targetPath = new Path(targetPathStr)
@@ -103,23 +106,22 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
     }
   }
 
-
   def doWrites(inputPath: String,
                outputPath: String,
                parallelism: Int = 100,
-               format: String = "parquet",
-               operation: String = OPERATION_UPSERT,
-               apiType: String = SPARK_DATASOURCE_API,
+               format: StorageFormat = Parquet,
+               operation: OperationType = OperationType.Upsert,
+               apiType: ApiType = ApiType.SparkDatasourceApi,
                opts: Map[String, String] = Map(),
                cacheInput: Boolean = false,
                overwrite: Boolean = true,
                nonPartitioned: Boolean = false,
-               scenarioId: String,
+               experimentId: String = StringUtils.generateRandomString(10),
                startRound: Int = 0): Unit = {
     println(
       s"""
          |$lineSepBold
-         |Executing $scenarioId ($numRounds rounds)
+         |Executing $experimentId ($numRounds rounds)
          |$lineSepBold
          |""".stripMargin)
 
@@ -139,7 +141,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
       }
 
       val targetOperation = if (roundNo == 0) {
-        OPERATION_INSERT
+        OperationType.Insert
       } else {
         operation
       }
@@ -155,12 +157,12 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
 
       // Some formats (like Iceberg) do require to create table in the Catalog before
       // you are able to ingest data into it
-      if (roundNo == 0 && (apiType == SPARK_SQL_API || format == "iceberg")) {
-        tryCreateTable(inputDF.schema, outputPath, format, opts, nonPartitioned, scenarioId)
+      if (roundNo == 0 && (apiType == ApiType.SparkSqlApi || format == StorageFormat.Iceberg)) {
+        tryCreateTable(inputDF.schema, outputPath, format, opts, nonPartitioned, experimentId)
       }
 
       allRoundTimes += doWriteRound(inputDF, outputPath, parallelism, format, apiType, saveMode,
-        targetOperation, opts, cacheInput, nonPartitioned, scenarioId)
+        targetOperation, opts, cacheInput, nonPartitioned, experimentId)
 
       inputDF.unpersist()
     })
@@ -177,41 +179,39 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
   def doWriteRound(inputDF: DataFrame,
                    outputPath: String,
                    parallelism: Int = 2,
-                   format: String = "parquet",
-                   apiType: String = SPARK_DATASOURCE_API,
+                   format: StorageFormat = Parquet,
+                   apiType: ApiType = ApiType.SparkDatasourceApi,
                    saveMode: SaveMode = SaveMode.Append,
-                   operation: String = OPERATION_UPSERT,
+                   operation: OperationType = OperationType.Upsert,
                    opts: Map[String, String] = Map(),
                    cacheInput: Boolean = false,
                    nonPartitioned: Boolean = false,
-                   scenarioId: String): Long = {
+                   experimentId: String): Long = {
     val startMs = System.currentTimeMillis()
 
     format match {
-      case "hudi" =>
-        val tableName = genHudiTableName(scenarioId)
+      case Hudi =>
+        val tableName = genHudiTableName(experimentId)
         writeToHudi(inputDF, operation, outputPath, parallelism, apiType, saveMode, opts, nonPartitioned, tableName)
-      case "delta" =>
-        val tableName = s"delta-$scenarioId"
+      case Delta =>
+        val tableName = s"delta-$experimentId"
         writeToDelta(inputDF, operation, outputPath, parallelism, saveMode, nonPartitioned, tableName)
-      case "parquet" =>
+      case Parquet =>
         writeToParquet(inputDF, operation, outputPath, parallelism, saveMode, nonPartitioned)
-      case "iceberg" =>
-        val tableName = genIcebergTableName(scenarioId)
+      case Iceberg =>
+        val tableName = genIcebergTableName(experimentId)
         writeToIceberg(inputDF, operation, outputPath, parallelism, saveMode, nonPartitioned, tableName)
       case _ =>
         throw new UnsupportedOperationException(s"$format is not supported")
     }
 
     val timeTaken = System.currentTimeMillis() - startMs
-
     println(s"Took ${timeTaken} ms.")
-
     timeTaken
   }
 
   private def writeToIceberg(df: DataFrame,
-                             operation: String,
+                             operation: OperationType,
                              outputPath: String,
                              parallelism: Int,
                              saveMode: SaveMode,
@@ -233,7 +233,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
       repartitionedDF.createOrReplaceTempView(s"source")
 
       operation match {
-        case OPERATION_INSERT =>
+        case OperationType.Insert =>
           // NOTE: Iceberg requires ordering of the dataset when being inserted into partitioned tables
           val insertIntoTableSql =
             s"""
@@ -243,7 +243,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
 
           executeSparkSql(spark, insertIntoTableSql)
 
-        case OPERATION_UPSERT =>
+        case OperationType.Upsert =>
           df.createOrReplaceTempView(s"source")
           // Execute MERGE INTO performing
           //   - Updates for all records w/ matching (partition, key) tuples
@@ -262,7 +262,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
   }
 
   private def writeToDelta(df: DataFrame,
-                           operation: String,
+                           operation: OperationType,
                            outputPath: String,
                            parallelism: Int,
                            saveMode: SaveMode,
@@ -270,7 +270,7 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
                            tableName: String): Unit = {
     val targetPath = s"$outputPath/$tableName"
     operation match {
-      case OPERATION_INSERT =>
+      case OperationType.Insert =>
         val repartitionedDF = if (nonPartitioned) {
           df.repartition(parallelism)
         } else {
@@ -288,9 +288,9 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
           .mode(saveMode)
           .save(targetPath)
 
-      case OPERATION_UPSERT =>
+      case OperationType.Upsert =>
         if (!DeltaTable.isDeltaTable(targetPath)) {
-          throw new UnsupportedOperationException("Operation 'upsert' is not supported for Delta")
+          throw new UnsupportedOperationException("Operation 'upsert' cannot be performed")
         } else {
           val deltaTable = DeltaTable.forPath(targetPath)
           deltaTable.as("oldData")
@@ -306,9 +306,9 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
     }
   }
 
-  private def writeToParquet(df: DataFrame, operation: String, outputPath: String, parallelism: Int, saveMode: SaveMode, nonPartitioned: Boolean): Unit = {
+  private def writeToParquet(df: DataFrame, operation: OperationType, outputPath: String, parallelism: Int, saveMode: SaveMode, nonPartitioned: Boolean): Unit = {
     operation match {
-      case OPERATION_INSERT =>
+      case OperationType.Insert =>
         val repartitionedDF = if (nonPartitioned) {
           df.repartition(parallelism)
         } else {
@@ -320,16 +320,16 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
           .mode(saveMode)
           .save(s"$outputPath/parquet")
 
-      case OPERATION_UPSERT =>
+      case OperationType.Upsert =>
         throw new UnsupportedOperationException("Operation 'upsert' is not supported for Parquet")
     }
   }
 
   private def writeToHudi(df: DataFrame,
-                          operation: String,
+                          operation: OperationType,
                           outputPath: String,
                           parallelism: Int,
-                          apiType: String,
+                          apiType: ApiType,
                           saveMode: SaveMode,
                           opts: Map[String, String],
                           nonPartitioned: Boolean,
@@ -342,33 +342,29 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
     }
 
     apiType match {
-      case SPARK_DATASOURCE_API =>
+      case ApiType.SparkDatasourceApi =>
         val targetOpts = opts ++ Map(
-          HoodieWriteConfig.TABLE_NAME -> "hudi",
+          HoodieWriteConfig.TBL_NAME.key() -> "hudi",
         )
-
         repartitionedDF.write.format("hudi")
           .options(targetOpts)
-          .option(DataSourceWriteOptions.OPERATION.key, operation)
+          .option(DataSourceWriteOptions.OPERATION.key, operation.toString)
           .mode(saveMode)
           .save(s"$outputPath/$tableName")
 
-      case SPARK_SQL_API =>
+      case ApiType.SparkSqlApi =>
         repartitionedDF.createOrReplaceTempView("source")
-
         val escapedTableName = escapeTableName(tableName)
 
         operation match {
-          case OPERATION_INSERT =>
+          case OperationType.Insert =>
             val insertIntoTableSql =
               s"""
                  |INSERT INTO $escapedTableName
                  |SELECT * FROM source
                  |""".stripMargin
-
             executeSparkSql(spark, insertIntoTableSql)
-
-          case OPERATION_UPSERT =>
+          case OperationType.Upsert =>
             // Execute MERGE INTO performing
             //   - Updates for all records w/ matching (partition, key) tuples
             //   - Inserts for all remaining records
@@ -380,7 +376,6 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
                  |WHEN MATCHED THEN UPDATE SET *
                  |WHEN NOT MATCHED THEN INSERT *
                  |""".stripMargin)
-
         }
     }
   }
@@ -388,27 +383,148 @@ class DataLoader(val spark: SparkSession, val numRounds: Int = 10) extends Seria
   private def escapeTableName(tableName: String) =
     tableName.split('.').map(np => s"`$np`").mkString(".")
 
-  private def genIcebergTableName(scenarioId: String): String =
-    s"default.iceberg_$scenarioId"
+  private def genIcebergTableName(experimentId: String): String =
+    s"default.iceberg_$experimentId"
 
-  private def genHudiTableName(scenarioId: String): String =
-    s"default.hudi-$scenarioId".replace("-", "_")
+  private def genHudiTableName(experimentId: String): String =
+    s"default.hudi-$experimentId".replace("-", "_")
 }
 
-object DataLoader {
+sealed trait OperationType {
+  def asString: String
+}
 
-  val OPERATION_INSERT = "insert"
-  val OPERATION_UPSERT = "upsert"
-  val SPARK_DATASOURCE_API = "spark-datasource"
-  val SPARK_SQL_API = "spark-sql"
+object OperationType {
+  case object Upsert extends OperationType { val asString = "upsert" }
+  case object Insert extends OperationType { val asString = "insert" }
 
-  def withPersisted[T](df: DataFrame)(block: => T): T = {
-    df.persist(StorageLevel.MEMORY_ONLY)
-    try {
-      block
-    } finally {
-      df.unpersist()
+  def fromString(s: String): OperationType = s match {
+    case "upsert" => Upsert
+    case "insert" => Insert
+    case _ => throw new IllegalArgumentException(s"Invalid OperationType: $s")
+  }
+
+  def values(): List[String] = List(Upsert.asString, Insert.asString)
+}
+
+sealed trait StorageFormat {
+  def asString: String
+}
+
+object StorageFormat {
+  case object Iceberg extends StorageFormat { val asString = "iceberg" }
+  case object Delta extends StorageFormat { val asString = "delta" }
+  case object Hudi extends StorageFormat { val asString = "hudi" }
+  case object Parquet extends StorageFormat { val asString = "parquet" }
+
+  def fromString(s: String): StorageFormat = s match {
+    case "iceberg" => Iceberg
+    case "delta" => Delta
+    case "hudi" => Hudi
+    case "parquet" => Parquet
+    case _ => throw new IllegalArgumentException(s"Invalid StorageFormat: $s")
+  }
+
+  def values(): List[String] = List(Iceberg.asString, Delta.asString, Hudi.asString, Parquet.asString)
+}
+
+case class LoadConfig(numberOfRounds: Int = 10,
+                      inputPath: String = "",
+                      outputPath: String = "",
+                      parallelism: Int = 100,
+                      format: String = "hudi",
+                      operationType: String = "upsert",
+                      options: Map[String, String] = Map.empty,
+                      nonPartitioned: Boolean = false,
+                      experimentId: String = StringUtils.generateRandomString(10)
+                     )
+
+object IncrementalLoader {
+  // Enum for API types
+  sealed trait ApiType { def asString: String }
+  object ApiType {
+    case object SparkDatasourceApi extends ApiType { val asString = "spark-datasource" }
+    case object SparkSqlApi extends ApiType { val asString = "spark-sql" }
+  }
+
+  def main(args: Array[String]): Unit = {
+    val parser = new scopt.OptionParser[LoadConfig]("lake-loader | incremental loader") {
+      head("lake-loader", "1.x")
+
+      opt[Int]("number-rounds")
+        .action((x, c) => c.copy(numberOfRounds = x))
+        .text("Number of rounds of incremental change data to generate. Default 10.")
+
+      opt[String]('i', "input-path")
+        .required()
+        .action((x, c) => c.copy(inputPath = x))
+        .text("Input path")
+
+      opt[String]('o', "output-path")
+        .required()
+        .action((x, c) => c.copy(outputPath = x))
+        .text("Output path")
+
+      opt[Int]("parallelism")
+        .required()
+        .action((x, c) => c.copy(parallelism = x))
+        .text("Parallelism")
+
+      opt[String]("format")
+        .required()
+        .action((x, c) => c.copy(format = x))
+        .validate { x =>
+          if (StorageFormat.values().contains(x))
+            Right(())
+          else
+            Left(s"Invalid format: '$x'. Allowed: ${StorageFormat.values().mkString(", ")}")
+        }
+        .text("Format to load data into. Options: " + StorageFormat.values().mkString(", "))
+
+      opt[String]("operation-type")
+        .action((x, c) => c.copy(operationType = x))
+        .validate { x =>
+          if (OperationType.values().contains(x))
+            Right(())
+          else
+            Left(s"Invalid operation: '$x'. Allowed: ${OperationType.values().mkString(", ")}")
+        }
+        .text("Write operation type")
+
+      opt[Map[String, String]]("options")
+        .action((x, c) => c.copy(options = x))
+        .text("Options")
+
+      opt[Boolean]("non-partitioned")
+        .action((x, c) => c.copy(nonPartitioned = x))
+        .text("Non partitioned")
+
+      opt[String]('e', "experiment-id")
+        .action((x, c) => c.copy(experimentId = x))
+        .text("Experiment ID")
+    }
+
+    parser.parse(args, LoadConfig()) match {
+      case Some(config) =>
+        val spark = SparkSession.builder
+          .appName("lake-loader incremental data loader")
+          .getOrCreate()
+
+        val dataLoader = new IncrementalLoader(spark, config.numberOfRounds)
+        dataLoader.doWrites(
+          config.inputPath,
+          config.outputPath,
+          parallelism = config.parallelism,
+          format = StorageFormat.fromString(config.format),
+          operation = OperationType.fromString(config.operationType),
+          opts = config.options,
+          nonPartitioned = config.nonPartitioned,
+          experimentId = config.experimentId
+        )
+        spark.stop()
+      case None =>
+        // scopt already prints help
+        sys.exit(1)
     }
   }
 }
-

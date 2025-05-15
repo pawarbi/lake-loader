@@ -400,7 +400,7 @@ object ChangeDataGenerator {
       }
     }
 
-    val parser = new scopt.OptionParser[DatagenConfig]("ChangeDataGeneratorApp") {
+    val parser = new scopt.OptionParser[DatagenConfig]("lake-loader | change data generator") {
       head("change data generator usage")
 
       opt[String]('p', "path")
