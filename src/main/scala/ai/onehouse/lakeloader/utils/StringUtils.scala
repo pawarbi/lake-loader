@@ -12,7 +12,7 @@
  * limitations under the License.
  */
 
-package utils
+package ai.onehouse.lakeloader.utils
 
 object StringUtils {
 

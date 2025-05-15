@@ -1,3 +1,5 @@
+package ai.onehouse.lakeloader
+
 /*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,22 +14,18 @@
  * limitations under the License.
  */
 
-import DataLoader.{OPERATION_INSERT, OPERATION_UPSERT, SPARK_DATASOURCE_API, SPARK_SQL_API, withPersisted}
-
-import datagen.ChangeDataGenerator
-
-import io.delta.tables.DeltaTable
-
+import ai.onehouse.lakeloader.DataLoader._
 import org.apache.hadoop.fs.Path
 import org.apache.hudi.DataSourceWriteOptions
 import org.apache.hudi.config.HoodieWriteConfig
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions
-import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
-import utils.SparkUtils.executeSparkSql
-import utils.StringUtils.lineSepBold
+import ai.onehouse.lakeloader.utils.SparkUtils.executeSparkSql
+import ai.onehouse.lakeloader.utils.StringUtils.lineSepBold
+import io.delta.tables.DeltaTable
 
 import java.io.Serializable
 import scala.collection.mutable.ListBuffer

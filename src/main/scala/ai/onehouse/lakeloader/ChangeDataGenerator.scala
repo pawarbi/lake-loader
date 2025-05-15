@@ -12,19 +12,19 @@
  * limitations under the License.
  */
 
-package datagen
+package ai.onehouse.lakeloader
 
-import datagen.ChangeDataGenerator.KeyTypes.KeyType
-import datagen.ChangeDataGenerator.UpdatePatterns.{Uniform, UpdatePatterns}
-import datagen.ChangeDataGenerator.{KeyTypes, UpdatePatterns, expectedCompressionRatio, genParallelRDD}
+import ai.onehouse.lakeloader.ChangeDataGenerator.{KeyTypes, UpdatePatterns, expectedCompressionRatio, genParallelRDD}
+import ai.onehouse.lakeloader.ChangeDataGenerator.KeyTypes.KeyType
+import ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns.{Uniform, UpdatePatterns}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CatalystUtil.partitionLocalLimit
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{ArrayType, FloatType, IntegerType, LongType, MapType, StringType, StructField, StructType}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
-import utils.{MathUtils, StringUtils}
-import utils.StringUtils.lineSepBold
+import ai.onehouse.lakeloader.utils.StringUtils.lineSepBold
+import ai.onehouse.lakeloader.utils.{MathUtils, StringUtils}
 
 import java.io.Serializable
 import java.time.LocalDate
@@ -447,7 +447,7 @@ case class Config(outputPath: String = "",
 
 object ChangeDataGenerator {
 
-  private val expectedCompressionRatio = .66
+  val expectedCompressionRatio = .66
   val DEFAULT_DATA_GEN_FORMAT: String = "parquet"
 
   object KeyTypes extends Enumeration {

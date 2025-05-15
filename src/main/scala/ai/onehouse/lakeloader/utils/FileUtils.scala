@@ -12,23 +12,22 @@
  * limitations under the License.
  */
 
-package utils
+package ai.onehouse.lakeloader.utils
 
-import org.apache.spark.sql.SparkSession
+import scala.io.Source
+import scala.util.{Try, Using}
 
-object SparkUtils {
+object FileUtils {
 
-  def executeSparkSql(spark: SparkSession, sql: String): Unit = {
-    println(
-      s"""
-         |Executing:
-         |--------------------------------
-         |$sql
-         |--------------------------------
-         |""".stripMargin)
+  def loadDoubles(filePath: String): List[Double] = {
+    Using.resource(Source.fromFile(filePath)) { source =>
+      source.getLines().flatMap(line => Try(line.toDouble).toOption).toList
+    }
+  }
 
-    spark.time {
-      spark.sql(sql).show()
+  def loadLongs(filePath: String): List[Long] = {
+    Using.resource(Source.fromFile(filePath)) { source =>
+      source.getLines().flatMap(line => Try(line.toLong).toOption).toList
     }
   }
 }
