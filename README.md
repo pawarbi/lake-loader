@@ -39,11 +39,11 @@ The following generates dateset for a 1TB **FACT** table with
 
 ```
 import ai.onehouse.lakeloader.ChangeDataGenerator
+import ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns
 
 val input_path = "file:///<input_path>"
 val numRounds = 20
 
-## Ensures that the initial load writes to all partitions but the incremental loads only write to latest 2 partitions.
 val partitionDistribution:List[List[Double]] = List(List.fill(365)(1.0/365)) ++ List.fill(numRounds-1)(List(0.5, 0.5) ++ List.fill(363)(0.0))
 
 val datagen = new ChangeDataGenerator(spark, numRounds = numRounds)
@@ -70,6 +70,7 @@ The following generates dateset for a 100GB **DIM** table with
 
 ```
 import ai.onehouse.lakeloader.ChangeDataGenerator
+import ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns
 
 val input_path = "file:///<input_path>"
 val numRounds = 20
@@ -81,7 +82,8 @@ datagen.generateWorkload(input_path,
                          recordSize = 1000,
                          updateRatio = 0.5f,
                          totalPartitions = 1,
-                         updatePatterns=UpdatePatterns.Random)
+                         updatePatterns = UpdatePatterns.Uniform,
+                         numPartitionsToUpdate = 1)
 ```
 
 #### Events table arguments
@@ -95,11 +97,12 @@ The following generates dateset for a 2TB **EVENTS** table with
 
 ```
 import ai.onehouse.lakeloader.ChangeDataGenerator
+import ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns
 
 val input_path = "file:///<input_path>"
 val numRounds = 20
+val numPartitions = 1095
 
-## Ensures that the initial load writes to all partitions but the incremental loads only write to latest partition.
 val partitionDistribution:List[List[Double]] = List(List.fill(numPartitions)(1.0/numPartitions)) ++ List.fill(numRounds-1)(List(1.0) ++ List.fill(numPartitions-1)(0.0))
 
 val datagen = new ChangeDataGenerator(spark, numRounds = numRounds)
@@ -108,7 +111,7 @@ datagen.generateWorkload(input_path,
                          numColumns = 30,
                          recordSize = 200,
                          updateRatio = 0.0f,
-                         totalPartitions = 1095,
+                         totalPartitions = numPartitions,
                          partitionDistributionMatrixOpt = Some(partitionDistribution))
 ```
 

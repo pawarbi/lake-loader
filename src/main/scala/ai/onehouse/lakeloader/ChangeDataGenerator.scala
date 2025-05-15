@@ -127,29 +127,29 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
    * @param numColumns                      total number of columns in the schema
    * @param recordSize                     size of each record in bytes
    * @param updateRatio                    ratio of updates in the batch (remaining will be inserts)
-   * @param totalPartitions                Number of total partitions
+   * @param totalPartitions                Number of total partitions (default: unpartitioned)
    * @param partitionDistributionMatrixOpt defines to-be-generated new records' distribution across partitions (for every round)
    * @param targetDataFileSize             data file size hint that data generation will aim to produce
    * @param skipIfExists                   should skip generation for the rounds possibly generated during previous
    * @param keyType                        format for generating the primary key
    * @param startRound                     round to start generating from, default 0.
    * @param updatePatterns                 Update pattern for generating updates: random (uniform) or zipf (skewed).
-   * @param numPartitionsToUpdate          Number of partitions to update (default 1)
+   * @param numPartitionsToUpdate          Number of partitions to update (default -1/ none)
    */
   def generateWorkload(path: String,
                        roundsDistribution: List[Long] = List.fill(numRounds)(1000000L),
                        numColumns: Int = 10,
                        recordSize: Int = 1024,
                        updateRatio: Double = 0.5f,
-                       totalPartitions: Int = 1,
+                       totalPartitions: Int = -1,
                        partitionDistributionMatrixOpt: Option[List[List[Double]]] = None,
                        targetDataFileSize: Int = 128 * 1024 * 1024,
                        skipIfExists: Boolean = false,
                        keyType: KeyType = KeyTypes.Random,
                        startRound: Int = 0,
                        updatePatterns: UpdatePatterns = UpdatePatterns.Uniform,
-                       numPartitionsToUpdate: Int = 1): Unit = {
-    assert(totalPartitions != -1 || partitionDistributionMatrixOpt.isDefined)
+                       numPartitionsToUpdate: Int = -1): Unit = {
+    assert(totalPartitions != -1 || partitionDistributionMatrixOpt.isDefined, "Either set the total partitions or configure the partitionDistributionMatrixOpt")
     assert(numColumns >= 5, "The number of columns needs to be at least 5 since we need at least 4 cols for key, partition, round, and timestamp.")
     assert(numPartitionsToUpdate <= totalPartitions, "the number of partitions to update should be lower than the total partitions")
 
@@ -180,7 +180,7 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
       } else {
         // Calculate inserts/updates split
         val targetRecords = roundsDistribution(curRound)
-        val numUpdates = if (curRound == 0) 0 else Math.min((updateRatio * targetRecords).toLong, curRound * targetRecords)
+        val numUpdates = if (curRound == 0 || numPartitionsToUpdate <= 0) 0 else Math.min((updateRatio * targetRecords).toLong, curRound * targetRecords)
         val numInserts = targetRecords - numUpdates
 
         val targetParallelism = Math.max(2, (targetRecords / (targetDataFileSize / (recordSize * COMPRESSION_RATIO_GUESS))).toInt)
@@ -194,40 +194,14 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
              |""".stripMargin)
 
         ////////////////////////////////////////
-        // Generating updates based on distribution type.
-        ////////////////////////////////////////
-        val rawUpdatesDF = updatePatterns match {
-          case Uniform =>
-            getRandomlyDistributedUpdates(partitionPaths, numUpdates, numPartitionsToUpdate, path, curRound)
-          case Zipf =>
-            getZipfDistributedUpdates(partitionPaths, numUpdates, numPartitionsToUpdate, path, curRound)
-          case _ =>
-            throw new IllegalArgumentException(s"Unsupported update pattern: $updatePatterns")
-        }
-
-        val newTs = System.currentTimeMillis()
-        // Update the timestamp and current round for the updated record.
-        val finalUpdatedDf = rawUpdatesDF
-          .withColumn("ts", lit(newTs))
-          .withColumn("round", lit(curRound))
-
-        // NOTE: Applying this limit does not guarantee that exactly N elements will be contained in the
-        //       returned dataset, since it might not be applying Spark's [[GlobalLimit]] operator.
-        //       Instead, it might return slightly higher number of the records (but no more than O(number of partitions)),
-        //       since we're simply applying [[LocalLimit]] to circumvent the performance implications of
-        //       [[GlobalLimit]] for very large datasets (coalescing all partitions into a single one, then doing
-        //       a limit on it)
-        val updatesDF = partitionLocalLimit(finalUpdatedDf.repartition(targetParallelism), numUpdates.toInt)
-
-        ////////////////////////////////////////
         // Generating inserts
         ////////////////////////////////////////
-
         val insertsRDD = genParallelRDD(spark, targetParallelism, 0, numInserts)
           .map(_ => generateNewRecord(curRound, recordSize, partitionPaths, partitionDistributionCDF, keyType, schema))
 
         val insertsDF = spark.createDataFrame(insertsRDD, schema)
-        val upsertDF = if (numUpdates == 0) insertsDF else insertsDF.union(updatesDF)
+        val upsertDF = if (numUpdates == 0) insertsDF else insertsDF.union(
+          generateUpdates(updatePatterns, partitionPaths, numUpdates, numPartitionsToUpdate, path, targetParallelism, curRound))
 
         spark.time {
           upsertDF
@@ -243,6 +217,40 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
     })
   }
 
+  ////////////////////////////////////////
+  // Generating updates based on distribution type.
+  ////////////////////////////////////////
+  private def generateUpdates(updatePatterns: UpdatePatterns,
+                              partitionPaths: List[String],
+                              numUpdateRecords: Long,
+                              numPartitionsToUpdate: Int,
+                              path: String,
+                              targetParallelism: Int,
+                              currentRound: Int): DataFrame = {
+    val rawUpdatesDF = updatePatterns match {
+      case Uniform =>
+        getRandomlyDistributedUpdates(partitionPaths, numUpdateRecords, numPartitionsToUpdate, path, currentRound)
+      case Zipf =>
+        getZipfDistributedUpdates(partitionPaths, numUpdateRecords, numPartitionsToUpdate, path, currentRound)
+      case _ =>
+        throw new IllegalArgumentException(s"Unsupported update pattern: $updatePatterns")
+    }
+
+    val newTs = System.currentTimeMillis()
+    // Update the timestamp and current round for the updated record.
+    val finalUpdatedDf = rawUpdatesDF
+      .withColumn("ts", lit(newTs))
+      .withColumn("round", lit(currentRound))
+
+    // NOTE: Applying this limit does not guarantee that exactly N elements will be contained in the
+    //       returned dataset, since it might not be applying Spark's [[GlobalLimit]] operator.
+    //       Instead, it might return slightly higher number of the records (but no more than O(number of partitions)),
+    //       since we're simply applying [[LocalLimit]] to circumvent the performance implications of
+    //       [[GlobalLimit]] for very large datasets (coalescing all partitions into a single one, then doing
+    //       a limit on it)
+    partitionLocalLimit(finalUpdatedDf.repartition(targetParallelism), numUpdateRecords.toInt)
+  }
+
   private def getZipfDistributedUpdates(partitionPaths: List[String],
                                         numUpdateRecords: Long,
                                         numPartitionsToWrite: Int,
@@ -254,9 +262,6 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
 
     var sourceDf = spark.read.format(ChangeDataGenerator.DEFAULT_DATA_GEN_FORMAT).load(s"$path/*")
     sourceDf = sourceDf.filter(col("partition").isin(partitionsToUpdate: _*))
-    val updateCount = sourceDf.count()
-    println(s"Number of updates total records for round # $currentRound: COUNT $updateCount")
-
     sourceDf.createOrReplaceTempView("source_df_partitions")
 
     var rankedDF = spark.sql(
@@ -278,7 +283,7 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
     val samplingRatios: Map[String, Double] = partitionCounts.map {
       case (partition, totalRecords) =>
         val desiredCount = numRecordsPerPartition(partitionPaths.indexOf(partition))
-        val ratio = 1.0 * desiredCount.toDouble / totalRecords.toDouble
+        val ratio = Math.min(1.0, desiredCount.toDouble / totalRecords.toDouble)
         partition -> ratio
     }
 
@@ -322,9 +327,9 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
     rankedDF = rankedDF.filter($"key_rank" === 1).drop(s"key_rank")
     rankedDF.persist()
     val totalRecords = rankedDF.count()
-    println(s"Number of updates total records for round # $currentRound: COUNT $totalRecords")
+    println(s"Picking random updates for round: # $currentRound: from total records = $totalRecords")
 
-    val samplingRatio = 1.0 * numUpdateRecords.toDouble / totalRecords.toDouble
+    val samplingRatio = Math.min(1.0, numUpdateRecords.toDouble / totalRecords.toDouble)
     val finalDF = sourceDf
       // NOTE: We should not be filtering out records as it will reduce number of updated records we sample
       .sample(samplingRatio)
@@ -365,13 +370,13 @@ case class DatagenConfig(outputPath: String = "",
                          numberColumns: Int = 10,
                          recordSize: Int = 1024,
                          updateRatio: Double = 0.5f,
-                         totalPartitions: Int = 1,
+                         totalPartitions: Int = -1,
                          targetDataFileSize: Int = 128 * 1024 * 1024,
                          skipIfExists: Boolean = false,
                          startRound: Int = 0,
                          keyType: KeyType = KeyTypes.Random,
                          updatePattern: UpdatePatterns = UpdatePatterns.Uniform,
-                         numPartitionsToUpdate: Int = 20
+                         numPartitionsToUpdate: Int = -1
                  )
 
 object ChangeDataGenerator {
@@ -439,7 +444,7 @@ object ChangeDataGenerator {
 
       opt[Int]("total-partitions")
         .action((x, c) => c.copy(totalPartitions = x))
-        .text("Total number of partitions desired for the benchmark table.")
+        .text("Total number of partitions desired for the benchmark table. Default unpartitioned.")
 
       opt[Int]("datagen-file-size")
         .action((x, c) => c.copy(targetDataFileSize = x))
