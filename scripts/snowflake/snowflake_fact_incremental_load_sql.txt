@@ -1,0 +1,324 @@
+ALTER WAREHOUSE MEDIUM RESUME;
+USE WAREHOUSE MEDIUM;
+
+DROP TABLE IF EXISTS l_fact_table;
+
+SELECT CURRENT_REGION();
+
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+
+CREATE OR REPLACE FILE FORMAT parquet_format
+  TYPE = 'PARQUET';
+
+CREATE OR REPLACE STORAGE INTEGRATION fact_source_s3_integration
+  TYPE = EXTERNAL_STAGE
+  STORAGE_PROVIDER = 'S3'
+  ENABLED = TRUE
+  STORAGE_AWS_ROLE_ARN = '<STORAGE_AWS_ROLE_ARN>'
+  STORAGE_AWS_EXTERNAL_ID =  '<STORAGE_AWS_EXTERNAL_ID>'
+  STORAGE_ALLOWED_LOCATIONS = ('<STORAGE_ALLOWED_LOCATIONS>');
+
+CREATE OR REPLACE EXTERNAL VOLUME fact_source_vol
+  STORAGE_LOCATIONS = (
+    (
+      NAME                = 'fact_source_vol',
+      STORAGE_PROVIDER    = 'S3',
+      STORAGE_BASE_URL    = '<STORAGE_BASE_URL>',
+      STORAGE_AWS_ROLE_ARN = '<STORAGE_AWS_ROLE_ARN>',
+      STORAGE_AWS_EXTERNAL_ID =  '<STORAGE_AWS_EXTERNAL_ID>'
+    )
+  )
+  ALLOW_WRITES = TRUE;
+
+CREATE OR REPLACE ICEBERG TABLE l_fact_table (
+  "key"               VARCHAR,
+  "partition"         VARCHAR,
+  "ts"                BIGINT,
+  "round"             INTEGER,
+  "textField10"       VARCHAR,
+  "textField21"       VARCHAR,
+  "textField32"       VARCHAR,
+  "textField43"       VARCHAR,
+  "textField54"       VARCHAR,
+  "longField15"       BIGINT,
+  "decimalField6"     FLOAT,
+  "longField27"       BIGINT,
+  "longField38"       BIGINT,
+  "intField19"        INTEGER,
+  "textField110"      VARCHAR,
+  "textField211"      VARCHAR,
+  "textField312"      VARCHAR,
+  "textField413"      VARCHAR,
+  "textField514"      VARCHAR,
+  "longField115"      BIGINT,
+  "decimalField16"    FLOAT,
+  "longField217"      BIGINT,
+  "longField318"      BIGINT,
+  "intField119"       INTEGER,
+  "textField120"      VARCHAR,
+  "textField221"      VARCHAR,
+  "textField322"      VARCHAR,
+  "textField423"      VARCHAR,
+  "textField524"      VARCHAR,
+  "longField125"      BIGINT,
+  "decimalField26"    FLOAT,
+  "longField227"      BIGINT,
+  "longField328"      BIGINT,
+  "intField129"       INTEGER,
+  "textField130"      VARCHAR,
+  "textField231"      VARCHAR,
+  "textField332"      VARCHAR
+)
+CLUSTER BY ("partition")
+CATALOG         = 'SNOWFLAKE'
+EXTERNAL_VOLUME = 'fact_source_vol'
+BASE_LOCATION   = 'l_fact_table'
+AUTO_REFRESH = false;
+
+CREATE OR REPLACE PROCEDURE create_parquet_stage(data_path STRING, round INT)
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    stage_name STRING;
+    url_base STRING;
+    storage_integration STRING DEFAULT 'fact_source_s3_integration';
+    ddl_command STRING;
+    ext_table_name STRING;
+    ext_table_ddl STRING;
+BEGIN
+    stage_name := 'parquet_stage' || round;
+    ext_table_name := 'ext_parquet_f' || round;
+    url_base := data_path || round || '/';
+
+    ddl_command := '
+        CREATE OR REPLACE STAGE ' || stage_name || '
+        URL = ''' || url_base || '''
+        STORAGE_INTEGRATION = ' || storage_integration || ';
+    ';
+    EXECUTE IMMEDIATE ddl_command;
+
+    ext_table_ddl := '
+        CREATE OR REPLACE EXTERNAL TABLE ' || ext_table_name || ' (
+          "key"            VARCHAR  AS (VALUE:key::VARCHAR),
+          "partition"      VARCHAR  AS (VALUE:partition::VARCHAR),
+          "ts"             BIGINT   AS (VALUE:ts::BIGINT),
+          "round"          INTEGER  AS (VALUE:round::INTEGER),
+          "textField10"    VARCHAR  AS (VALUE:textField10::VARCHAR),
+          "textField21"    VARCHAR  AS (VALUE:textField21::VARCHAR),
+          "textField32"    VARCHAR  AS (VALUE:textField32::VARCHAR),
+          "textField43"    VARCHAR  AS (VALUE:textField43::VARCHAR),
+          "textField54"    VARCHAR  AS (VALUE:textField54::VARCHAR),
+          "longField15"    BIGINT   AS (VALUE:longField15::BIGINT),
+          "decimalField6"  FLOAT    AS (VALUE:decimalField6::FLOAT),
+          "longField27"    BIGINT   AS (VALUE:longField27::BIGINT),
+          "longField38"    BIGINT   AS (VALUE:longField38::BIGINT),
+          "intField19"     INTEGER  AS (VALUE:intField19::INTEGER),
+          "textField110"   VARCHAR  AS (VALUE:textField110::VARCHAR),
+          "textField211"   VARCHAR  AS (VALUE:textField211::VARCHAR),
+          "textField312"   VARCHAR  AS (VALUE:textField312::VARCHAR),
+          "textField413"   VARCHAR  AS (VALUE:textField413::VARCHAR),
+          "textField514"   VARCHAR  AS (VALUE:textField514::VARCHAR),
+          "longField115"   BIGINT   AS (VALUE:longField115::BIGINT),
+          "decimalField16" FLOAT    AS (VALUE:decimalField16::FLOAT),
+          "longField217"   BIGINT   AS (VALUE:longField217::BIGINT),
+          "longField318"   BIGINT   AS (VALUE:longField318::BIGINT),
+          "intField119"    INTEGER  AS (VALUE:intField119::INTEGER),
+          "textField120"   VARCHAR  AS (VALUE:textField120::VARCHAR),
+          "textField221"   VARCHAR  AS (VALUE:textField221::VARCHAR),
+          "textField322"   VARCHAR  AS (VALUE:textField322::VARCHAR),
+          "textField423"   VARCHAR  AS (VALUE:textField423::VARCHAR),
+          "textField524"   VARCHAR  AS (VALUE:textField524::VARCHAR),
+          "longField125"   BIGINT   AS (VALUE:longField125::BIGINT),
+          "decimalField26" FLOAT    AS (VALUE:decimalField26::FLOAT),
+          "longField227"   BIGINT   AS (VALUE:longField227::BIGINT),
+          "longField328"   BIGINT   AS (VALUE:longField328::BIGINT),
+          "intField129"    INTEGER  AS (VALUE:intField129::INTEGER),
+          "textField130"   VARCHAR  AS (VALUE:textField130::VARCHAR),
+          "textField231"   VARCHAR  AS (VALUE:textField231::VARCHAR),
+          "textField332"   VARCHAR  AS (VALUE:textField332::VARCHAR)
+        )
+        LOCATION = @' || stage_name || '
+        FILE_FORMAT = (FORMAT_NAME = parquet_format);
+    ';
+    EXECUTE IMMEDIATE ext_table_ddl;
+
+    RETURN 'Stage created: ' || stage_name || ' with URL: ' || url_base;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE insert_into_iceberg_table(round_number INT)
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    source_table_name STRING;
+    insert_stmt STRING;
+BEGIN
+    -- Construct the full external table name
+    source_table_name := 'ext_parquet_f' || round_number;
+
+    -- Build the insert SQL
+    insert_stmt := '
+        INSERT INTO l_fact_table
+        SELECT
+          "key",
+          "partition",
+          "ts",
+          "round",
+          "textField10",
+          "textField21",
+          "textField32",
+          "textField43",
+          "textField54",
+          "longField15",
+          "decimalField6",
+          "longField27",
+          "longField38",
+          "intField19",
+          "textField110",
+          "textField211",
+          "textField312",
+          "textField413",
+          "textField514",
+          "longField115",
+          "decimalField16",
+          "longField217",
+          "longField318",
+          "intField119",
+          "textField120",
+          "textField221",
+          "textField322",
+          "textField423",
+          "textField524",
+          "longField125",
+          "decimalField26",
+          "longField227",
+          "longField328",
+          "intField129",
+          "textField130",
+          "textField231",
+          "textField332"
+        FROM ' || source_table_name || ';
+    ';
+
+    -- Execute the insert
+    EXECUTE IMMEDIATE insert_stmt;
+
+    RETURN 'Data inserted from ' || source_table_name;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE merge_into_iceberg_table(round_number INT)
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    source_table_name STRING;
+    merge_sql STRING;
+BEGIN
+    source_table_name := 'ext_parquet_f' || round_number;
+
+    -- Construct dynamic MERGE SQL
+    merge_sql := '
+MERGE INTO l_fact_table t
+USING (
+    SELECT * FROM ' || :source_table_name || '
+) s
+ON s."key" = t."key" AND s."partition" = t."partition"
+WHEN MATCHED THEN UPDATE SET
+  "ts" = s."ts",
+  "round" = s."round",
+  "textField10" = s."textField10",
+  "textField21" = s."textField21",
+  "textField32" = s."textField32",
+  "textField43" = s."textField43",
+  "textField54" = s."textField54",
+  "longField15" = s."longField15",
+  "decimalField6" = s."decimalField6",
+  "longField27" = s."longField27",
+  "longField38" = s."longField38",
+  "intField19" = s."intField19",
+  "textField110" = s."textField110",
+  "textField211" = s."textField211",
+  "textField312" = s."textField312",
+  "textField413" = s."textField413",
+  "textField514" = s."textField514",
+  "longField115" = s."longField115",
+  "decimalField16" = s."decimalField16",
+  "longField217" = s."longField217",
+  "longField318" = s."longField318",
+  "intField119" = s."intField119",
+  "textField120" = s."textField120",
+  "textField221" = s."textField221",
+  "textField322" = s."textField322",
+  "textField423" = s."textField423",
+  "textField524" = s."textField524",
+  "longField125" = s."longField125",
+  "decimalField26" = s."decimalField26",
+  "longField227" = s."longField227",
+  "longField328" = s."longField328",
+  "intField129" = s."intField129",
+  "textField130" = s."textField130",
+  "textField231" = s."textField231",
+  "textField332" = s."textField332"
+WHEN NOT MATCHED THEN INSERT (
+  "key", "partition", "ts", "round",
+  "textField10", "textField21", "textField32", "textField43", "textField54",
+  "longField15", "decimalField6", "longField27", "longField38", "intField19",
+  "textField110", "textField211", "textField312", "textField413", "textField514",
+  "longField115", "decimalField16", "longField217", "longField318", "intField119",
+  "textField120", "textField221", "textField322", "textField423", "textField524",
+  "longField125", "decimalField26", "longField227", "longField328", "intField129",
+  "textField130", "textField231", "textField332"
+) VALUES (
+  s."key", s."partition", s."ts", s."round",
+  s."textField10", s."textField21", s."textField32", s."textField43", s."textField54",
+  s."longField15", s."decimalField6", s."longField27", s."longField38", s."intField19",
+  s."textField110", s."textField211", s."textField312", s."textField413", s."textField514",
+  s."longField115", s."decimalField16", s."longField217", s."longField318", s."intField119",
+  s."textField120", s."textField221", s."textField322", s."textField423", s."textField524",
+  s."longField125", s."decimalField26", s."longField227", s."longField328", s."intField129",
+  s."textField130", s."textField231", s."textField332"
+);';
+
+    -- Execute the dynamic SQL
+    EXECUTE IMMEDIATE :merge_sql;
+
+    RETURN 'Merge completed for round';
+END;
+$$;
+
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 0);
+CALL insert_into_iceberg_table(0);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 1);
+CALL merge_into_iceberg_table(1);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 2);
+CALL merge_into_iceberg_table(2);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 3);
+CALL merge_into_iceberg_table(3);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 4);
+CALL merge_into_iceberg_table(4);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 5);
+CALL merge_into_iceberg_table(5);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 5);
+CALL merge_into_iceberg_table(6);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 5);
+CALL merge_into_iceberg_table(7);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 5);
+CALL merge_into_iceberg_table(8);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 5);
+CALL merge_into_iceberg_table(9);
