@@ -19,7 +19,7 @@
     <scala.libversion>2.12</scala.libversion>
     <hudi.version>1.0.2</hudi.version>
     <iceberg.version>1.9.0</iceberg.version>
-    <delta.version>3.3.0</delta.version>
+    <delta.version>2.4.0</delta.version>
     <scopt.version>4.1.0</scopt.version>
   </properties>
 
@@ -148,6 +148,12 @@
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_2.12</artifactId>
       <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-core_2.12</artifactId>
+      <version>${delta.version}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
