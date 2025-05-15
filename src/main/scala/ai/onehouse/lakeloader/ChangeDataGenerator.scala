@@ -150,7 +150,7 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
                        updatePatterns: UpdatePatterns = UpdatePatterns.Uniform,
                        numPartitionsToUpdate: Int = 1): Unit = {
     assert(totalPartitions != -1 || partitionDistributionMatrixOpt.isDefined)
-    assert(numColumns > 5, "The number of columns needs to be above 5 since we need at least 4 cols for key, partition, round, and timestamp.")
+    assert(numColumns >= 5, "The number of columns needs to be at least 5 since we need at least 4 cols for key, partition, round, and timestamp.")
     assert(numPartitionsToUpdate <= totalPartitions, "the number of partitions to update should be lower than the total partitions")
 
     // Compute records distribution matrix across partitions; such matrix
@@ -311,8 +311,17 @@ class ChangeDataGenerator(val spark: SparkSession, val numRounds: Int = 10) exte
 
     var sourceDf = spark.read.format(ChangeDataGenerator.DEFAULT_DATA_GEN_FORMAT).load(s"$path/*")
     sourceDf = sourceDf.filter(col("partition").isin(partitionsToUpdate: _*))
-    sourceDf.persist()
-    val totalRecords = sourceDf.count()
+    sourceDf.createOrReplaceTempView("source_df_partitions")
+
+    var rankedDF = spark.sql(
+      """
+        | SELECT *, rank(key) OVER (PARTITION BY key ORDER BY round DESC) as key_rank
+        | FROM source_df_partitions
+        |""".stripMargin
+    )
+    rankedDF = rankedDF.filter($"key_rank" === 1).drop(s"key_rank")
+    rankedDF.persist()
+    val totalRecords = rankedDF.count()
     println(s"Number of updates total records for round # $currentRound: COUNT $totalRecords")
 
     val samplingRatio = 1.0 * numUpdateRecords.toDouble / totalRecords.toDouble
