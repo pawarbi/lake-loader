@@ -278,3 +278,8 @@ loader.doWrites(inputPath,
 ```
 
 #### Snowflake
+In the case of Snowflake warehouse, we have added 3 scripts to help run the FACT, DIM and EVENT table benchmarks 
+using a medium cluster size. The files are under the *scipts* directory
+- snowflake_fact_incremental_load_sql.txt
+- snowflake_dim_incremental_load_sql.txt
+- snowflake_events_incremental_load_sql.txt

@@ -1,0 +1,198 @@
+ALTER WAREHOUSE MEDIUM RESUME;
+USE WAREHOUSE MEDIUM;
+
+DROP TABLE IF EXISTS l_events_table;
+
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+
+CREATE OR REPLACE FILE FORMAT parquet_format
+  TYPE = 'PARQUET';
+
+CREATE OR REPLACE STORAGE INTEGRATION event_source_s3_integration
+  TYPE = EXTERNAL_STAGE
+  STORAGE_PROVIDER = 'S3'
+  ENABLED = TRUE
+  STORAGE_AWS_ROLE_ARN = '<STORAGE_AWS_ROLE_ARN>'
+  STORAGE_AWS_EXTERNAL_ID =  '<STORAGE_AWS_EXTERNAL_ID>'
+  STORAGE_ALLOWED_LOCATIONS = ('<STORAGE_ALLOWED_LOCATIONS>');
+
+CREATE OR REPLACE EXTERNAL VOLUME event_source_volume
+  STORAGE_LOCATIONS = (
+    (
+      NAME                = 'event_source_volume',
+      STORAGE_PROVIDER    = 'S3',
+      STORAGE_BASE_URL    = '<STORAGE_BASE_URL>',
+      STORAGE_AWS_ROLE_ARN = '<STORAGE_AWS_ROLE_ARN>',
+      STORAGE_AWS_EXTERNAL_ID =  '<STORAGE_AWS_EXTERNAL_ID>'
+    )
+  )
+  ALLOW_WRITES = TRUE;
+
+CREATE OR REPLACE ICEBERG TABLE l_event_table (
+  "key"               VARCHAR,
+  "partition"         VARCHAR,
+  "round"             INTEGER,
+  "ts"                BIGINT,
+  "textField10"       VARCHAR,
+  "textField21"       VARCHAR,
+  "textField32"       VARCHAR,
+  "textField43"       VARCHAR,
+  "textField54"       VARCHAR,
+  "longField15"       BIGINT,
+  "decimalField6"     FLOAT,
+  "longField27"       BIGINT,
+  "longField38"       BIGINT,
+  "intField19"        INTEGER,
+  "textField110"      VARCHAR,
+  "textField211"      VARCHAR,
+  "textField312"      VARCHAR,
+  "textField413"      VARCHAR,
+  "textField514"      VARCHAR,
+  "longField115"      BIGINT,
+  "decimalField16"    FLOAT,
+  "longField217"      BIGINT,
+  "longField318"      BIGINT,
+  "intField119"       INTEGER,
+  "textField120"      VARCHAR,
+  "textField221"      VARCHAR,
+  "textField322"      VARCHAR
+)
+CLUSTER BY ("partition")
+CATALOG         = 'SNOWFLAKE'
+EXTERNAL_VOLUME = 'event_source_volume'
+BASE_LOCATION   = 'l_event_table'
+AUTO_REFRESH = false;
+
+CREATE OR REPLACE PROCEDURE create_parquet_stage(data_path STRING, round INT)
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    stage_name STRING;
+    url_base STRING;
+    storage_integration STRING DEFAULT 'event_source_s3_integration';
+    ddl_command STRING;
+    ext_table_name STRING;
+    ext_table_ddl STRING;
+BEGIN
+    stage_name := 'parquet_stage' || round;
+    ext_table_name := 'ext_parquet_events' || round;
+    url_base := data_path || round || '/';
+
+    ddl_command := '
+        CREATE OR REPLACE STAGE ' || stage_name || '
+        URL = ''' || url_base || '''
+        STORAGE_INTEGRATION = ' || storage_integration || ';
+    ';
+    EXECUTE IMMEDIATE ddl_command;
+
+    ext_table_ddl := '
+        CREATE OR REPLACE EXTERNAL TABLE ' || ext_table_name || ' (
+          "key"            VARCHAR  AS (VALUE:key::VARCHAR),
+          "partition"      VARCHAR  AS (VALUE:partition::VARCHAR),
+          "round"          INTEGER  AS (VALUE:round::INTEGER),
+          "ts"             BIGINT   AS (VALUE:ts::BIGINT),
+          "textField10"    VARCHAR  AS (VALUE:textField10::VARCHAR),
+          "textField21"    VARCHAR  AS (VALUE:textField21::VARCHAR),
+          "textField32"    VARCHAR  AS (VALUE:textField32::VARCHAR),
+          "textField43"    VARCHAR  AS (VALUE:textField43::VARCHAR),
+          "textField54"    VARCHAR  AS (VALUE:textField54::VARCHAR),
+          "longField15"    BIGINT   AS (VALUE:longField15::BIGINT),
+          "decimalField6"  FLOAT    AS (VALUE:decimalField6::FLOAT),
+          "longField27"    BIGINT   AS (VALUE:longField27::BIGINT),
+          "longField38"    BIGINT   AS (VALUE:longField38::BIGINT),
+          "intField19"     INTEGER  AS (VALUE:intField19::INTEGER),
+          "textField110"   VARCHAR  AS (VALUE:textField110::VARCHAR),
+          "textField211"   VARCHAR  AS (VALUE:textField211::VARCHAR),
+          "textField312"   VARCHAR  AS (VALUE:textField312::VARCHAR),
+          "textField413"   VARCHAR  AS (VALUE:textField413::VARCHAR),
+          "textField514"   VARCHAR  AS (VALUE:textField514::VARCHAR),
+          "longField115"   BIGINT   AS (VALUE:longField115::BIGINT),
+          "decimalField16" FLOAT    AS (VALUE:decimalField16::FLOAT),
+          "longField217"   BIGINT   AS (VALUE:longField217::BIGINT),
+          "longField318"   BIGINT   AS (VALUE:longField318::BIGINT),
+          "intField119"    INTEGER  AS (VALUE:intField119::INTEGER),
+          "textField120"   VARCHAR  AS (VALUE:textField120::VARCHAR),
+          "textField221"   VARCHAR  AS (VALUE:textField221::VARCHAR),
+          "textField322"   VARCHAR  AS (VALUE:textField322::VARCHAR)
+        )
+        LOCATION = @' || stage_name || '
+        FILE_FORMAT = (FORMAT_NAME = parquet_format);
+    ';
+    EXECUTE IMMEDIATE ext_table_ddl;
+
+    RETURN 'Stage created: ' || stage_name || ' with URL: ' || url_base;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE insert_into_iceberg_table(round_number INT)
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    source_table_name STRING;
+    insert_stmt STRING;
+BEGIN
+    -- Construct the full external table name
+    source_table_name := 'ext_parquet_events' || round_number;
+
+    -- Build the insert SQL
+    insert_stmt := '
+        INSERT INTO l_event_table
+        SELECT
+          "key",
+          "partition",
+          "round",
+          "ts",
+          "textField10",
+          "textField21",
+          "textField32",
+          "textField43",
+          "textField54",
+          "longField15",
+          "decimalField6",
+          "longField27",
+          "longField38",
+          "intField19",
+          "textField110",
+          "textField211",
+          "textField312",
+          "textField413",
+          "textField514",
+          "longField115",
+          "decimalField16",
+          "longField217",
+          "longField318",
+          "intField119",
+          "textField120",
+          "textField221",
+          "textField322"
+        FROM ' || source_table_name || ';
+    ';
+
+    -- Execute the insert
+    EXECUTE IMMEDIATE insert_stmt;
+
+    RETURN 'Data inserted from ' || source_table_name;
+END;
+$$;
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 0);
+CALL insert_into_iceberg_table(0);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 1);
+CALL insert_into_iceberg_table(1);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 2);
+CALL insert_into_iceberg_table(2);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 3);
+CALL insert_into_iceberg_table(3);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 4);
+CALL insert_into_iceberg_table(4);
+
+CALL create_parquet_stage('<DATA_S3_PATH>', 5);
+CALL insert_into_iceberg_table(5);
