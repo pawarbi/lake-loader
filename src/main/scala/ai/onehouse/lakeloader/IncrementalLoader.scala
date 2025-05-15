@@ -14,7 +14,6 @@ package ai.onehouse.lakeloader
  * limitations under the License.
  */
 
-import ai.onehouse.lakeloader.IncrementalLoader._
 import ai.onehouse.lakeloader.IncrementalLoader.ApiType
 import ai.onehouse.lakeloader.StorageFormat.{Delta, Hudi, Iceberg, Parquet}
 import org.apache.hadoop.fs.Path
@@ -24,7 +23,6 @@ import org.apache.hudi.keygen.constant.KeyGeneratorOptions
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
-import org.apache.spark.storage.StorageLevel
 import ai.onehouse.lakeloader.utils.SparkUtils.{executeSparkSql, withPersisted}
 import ai.onehouse.lakeloader.utils.StringUtils
 import ai.onehouse.lakeloader.utils.StringUtils.lineSepBold
@@ -184,7 +182,6 @@ class IncrementalLoader(val spark: SparkSession, val numRounds: Int = 10) extend
                    saveMode: SaveMode = SaveMode.Append,
                    operation: OperationType = OperationType.Upsert,
                    opts: Map[String, String] = Map(),
-                   cacheInput: Boolean = false,
                    nonPartitioned: Boolean = false,
                    experimentId: String): Long = {
     val startMs = System.currentTimeMillis()
@@ -200,7 +197,7 @@ class IncrementalLoader(val spark: SparkSession, val numRounds: Int = 10) extend
         writeToParquet(inputDF, operation, outputPath, parallelism, saveMode, nonPartitioned)
       case Iceberg =>
         val tableName = genIcebergTableName(experimentId)
-        writeToIceberg(inputDF, operation, outputPath, parallelism, saveMode, nonPartitioned, tableName)
+        writeToIceberg(inputDF, operation, nonPartitioned, tableName)
       case _ =>
         throw new UnsupportedOperationException(s"$format is not supported")
     }
@@ -212,9 +209,6 @@ class IncrementalLoader(val spark: SparkSession, val numRounds: Int = 10) extend
 
   private def writeToIceberg(df: DataFrame,
                              operation: OperationType,
-                             outputPath: String,
-                             parallelism: Int,
-                             saveMode: SaveMode,
                              nonPartitioned: Boolean,
                              tableName: String): Unit = {
     val escapedTableName = escapeTableName(tableName)
@@ -223,12 +217,6 @@ class IncrementalLoader(val spark: SparkSession, val numRounds: Int = 10) extend
       // NOTE: Iceberg requires incoming dataset to be partitioned, in case it's being ingested
       //       into partitioned table
       val repartitionedDF = df
-
-      /*if (nonPartitioned) {
-        df.repartition(parallelism)
-      } else {
-        df
-      }*/
 
       repartitionedDF.createOrReplaceTempView(s"source")
 

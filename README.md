@@ -115,8 +115,88 @@ datagen.generateWorkload(input_path,
                          partitionDistributionMatrixOpt = Some(partitionDistribution))
 ```
 
-### Instructions to load data for Apache Hudi
+### Instructions to load dataset incrementally across different platforms
 
-### Instructions to load data for Apache Iceberg
+#### EMR
+Using EMR spark-shell, you need to configure the following additional configs besides the typical spark configs:
+```
+  --jars /usr/share/aws/iceberg/lib/iceberg-spark3-runtime.jar
+  --conf spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.my_catalog.warehouse=s3://hudi-benchmark-source/icebergCatalog/ \
+  --conf spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog \
+  --conf spark.sql.catalog.my_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+  --conf spark.sql.defaultCatalog=my_catalog \
+  --conf spark.sql.catalog.my_catalog.http-client.apache.max-connections=5000 \
+  --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+```
 
-### Instructions to load data for Delta
+Within spark-shell, run the following command for FACT tables.
+```
+import ai.onehouse.lakeloader.IncrementalLoader
+import ai.onehouse.lakeloader.StorageFormat
+import ai.onehouse.lakeloader.OperationType
+
+val experimentId = "emr_fact"
+val numRounds = 10
+val inputPath = "s3a://input/fact-data"
+val targetPath = "s3a://output/iceberg-fact"
+
+val loader = new IncrementalLoader(spark, numRounds = numRounds)
+
+var opts = Map("write.parquet.compression-codec" -> "snappy")
+loader.doWrites(inputPath,
+  targetPath,
+  format = StorageFormat.Iceberg,
+  operation = OperationType.Upsert,
+  opts = opts,
+  experimentId = experimentId)
+```
+
+Run the following for DIM tables since they are non-partitioned.
+```
+import ai.onehouse.lakeloader.IncrementalLoader
+import ai.onehouse.lakeloader.StorageFormat
+import ai.onehouse.lakeloader.OperationType
+
+val experimentId = "emr_dim"
+val numRounds = 10
+val inputPath = "s3a://input/dim-data"
+val targetPath = "s3a://output/iceberg-dim"
+
+val loader = new IncrementalLoader(spark, numRounds = numRounds)
+
+var opts = Map("write.parquet.compression-codec" -> "snappy")
+loader.doWrites(inputPath,
+  targetPath,
+  format = StorageFormat.Iceberg,
+  operation = OperationType.Upsert,
+  opts = opts,
+  nonPartitioned = true,
+  experimentId = experimentId)
+```
+
+Run the following for EVENT tables since they are insert-only.
+```
+import ai.onehouse.lakeloader.IncrementalLoader
+import ai.onehouse.lakeloader.StorageFormat
+import ai.onehouse.lakeloader.OperationType
+
+val experimentId = "emr_event"
+val numRounds = 10
+val inputPath = "s3a://input/event-data"
+val targetPath = "s3a://output/iceberg-event"
+
+val loader = new IncrementalLoader(spark, numRounds = numRounds)
+
+var opts = Map("write.parquet.compression-codec" -> "snappy")
+loader.doWrites(inputPath,
+  targetPath,
+  format = StorageFormat.Iceberg,
+  operation = OperationType.Insert,
+  opts = opts,
+  experimentId = experimentId)
+```
+
+#### Databricks
+
+#### Snowflake
