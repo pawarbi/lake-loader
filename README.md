@@ -118,7 +118,8 @@ datagen.generateWorkload(input_path,
 ### Instructions to load dataset incrementally across different platforms
 
 #### EMR
-Using EMR spark-shell, you need to configure the following additional configs besides the typical spark configs:
+Provision a cluster with the latest EMR version 7.5.0. 
+Using the spark-shell, you need to configure the following additional configs besides the typical spark configs:
 ```
   --jars /usr/share/aws/iceberg/lib/iceberg-spark3-runtime.jar
   --conf spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog \
@@ -139,7 +140,7 @@ import ai.onehouse.lakeloader.OperationType
 val experimentId = "emr_fact"
 val numRounds = 10
 val inputPath = "s3a://input/fact-data"
-val targetPath = "s3a://output/iceberg-fact"
+val targetPath = "s3a://output/emr-fact"
 
 val loader = new IncrementalLoader(spark, numRounds = numRounds)
 
@@ -161,7 +162,7 @@ import ai.onehouse.lakeloader.OperationType
 val experimentId = "emr_dim"
 val numRounds = 10
 val inputPath = "s3a://input/dim-data"
-val targetPath = "s3a://output/iceberg-dim"
+val targetPath = "s3a://output/emr-dim"
 
 val loader = new IncrementalLoader(spark, numRounds = numRounds)
 
@@ -184,7 +185,7 @@ import ai.onehouse.lakeloader.OperationType
 val experimentId = "emr_event"
 val numRounds = 10
 val inputPath = "s3a://input/event-data"
-val targetPath = "s3a://output/iceberg-event"
+val targetPath = "s3a://output/emr-event"
 
 val loader = new IncrementalLoader(spark, numRounds = numRounds)
 
@@ -198,5 +199,82 @@ loader.doWrites(inputPath,
 ```
 
 #### Databricks
+Provision a recent Databricks cluster with or without native acceleration (photon) enabled.
+Use the following (optional) spark configs to disable deletion vectors for delta to test with COPY_ON_WRITE,
+snappy compression and disable parquet file caching.
+```
+  .config("spark.databricks.delta.properties.defaults.enableDeletionVectors", "false")
+  .config("spark.sql.parquet.compression.codec", "snappy")
+  .config("spark.databricks.io.cache.enabled", "false")
+```
+Within a notebook, run the following command for FACT tables.
+```
+import ai.onehouse.lakeloader.IncrementalLoader
+import ai.onehouse.lakeloader.StorageFormat
+import ai.onehouse.lakeloader.OperationType
+
+val experimentId = "dbr_fact"
+val numRounds = 10
+val inputPath = "s3a://input/fact-data"
+val targetPath = "s3a://output/dbr-fact"
+
+val loader = new IncrementalLoader(spark, numRounds = numRounds)
+
+var opts = Map("write.parquet.compression-codec" -> "snappy")
+loader.doWrites(inputPath,
+  targetPath,
+  parallelism = 1000,
+  format = StorageFormat.Delta,
+  operation = OperationType.Upsert,
+  opts = opts,
+  experimentId = experimentId)
+```
+
+Run the following for DIM tables since they are non-partitioned.
+```
+import ai.onehouse.lakeloader.IncrementalLoader
+import ai.onehouse.lakeloader.StorageFormat
+import ai.onehouse.lakeloader.OperationType
+
+val experimentId = "dbr_dim"
+val numRounds = 10
+val inputPath = "s3a://input/dim-data"
+val targetPath = "s3a://output/dbr-dim"
+
+val loader = new IncrementalLoader(spark, numRounds = numRounds)
+
+var opts = Map("write.parquet.compression-codec" -> "snappy")
+loader.doWrites(inputPath,
+  targetPath,
+  parallelism = 1000,
+  format = StorageFormat.Delta,
+  operation = OperationType.Upsert,
+  opts = opts,
+  nonPartitioned = true,
+  experimentId = experimentId)
+```
+
+Run the following for EVENT tables since they are insert-only.
+```
+import ai.onehouse.lakeloader.IncrementalLoader
+import ai.onehouse.lakeloader.StorageFormat
+import ai.onehouse.lakeloader.OperationType
+
+val experimentId = "dbr_event"
+val numRounds = 10
+val inputPath = "s3a://input/event-data"
+val targetPath = "s3a://output/dbr-event"
+
+val loader = new IncrementalLoader(spark, numRounds = numRounds)
+
+var opts = Map("write.parquet.compression-codec" -> "snappy")
+loader.doWrites(inputPath,
+  targetPath,
+  parallelism = 1000,
+  format = StorageFormat.Delta,
+  operation = OperationType.Insert,
+  opts = opts,
+  experimentId = experimentId)
+```
 
 #### Snowflake

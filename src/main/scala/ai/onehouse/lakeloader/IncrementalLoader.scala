@@ -160,7 +160,7 @@ class IncrementalLoader(val spark: SparkSession, val numRounds: Int = 10) extend
       }
 
       allRoundTimes += doWriteRound(inputDF, outputPath, parallelism, format, apiType, saveMode,
-        targetOperation, opts, cacheInput, nonPartitioned, experimentId)
+        targetOperation, opts, nonPartitioned, experimentId)
 
       inputDF.unpersist()
     })
