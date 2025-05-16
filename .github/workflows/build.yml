@@ -1,4 +1,4 @@
-name: Build JAR
+name: Build Fabric-Compatible JAR
 
 on: [push, workflow_dispatch]
 
@@ -8,14 +8,65 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       
+      - name: Set up JDK 11
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11'
+          distribution: 'adopt'
+          
+      - name: Update pom.xml for Fabric compatibility
+        run: |
+          sed -i 's/<scala.version>2.12.10<\/scala.version>/<scala.version>2.12.18<\/scala.version>/g' pom.xml
+          sed -i 's/<spark.version>3.5.3<\/spark.version>/<spark.version>3.5.1<\/spark.version>/g' pom.xml
+          
+      - name: Fix SerializationIssue in ChangeDataGenerator
+        run: |
+          sed -i 's/import java.io.Serializable/import java.io.Serializable\nimport org.apache.spark.serializer.KryoSerializer\nimport org.apache.spark.SparkConf/g' src/main/scala/ai/onehouse/lakeloader/ChangeDataGenerator.scala
+          
+          # Add Kryo serialization to SparkSession builder in main method
+          sed -i '/val spark = SparkSession.builder/a\          .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")\n          .config("spark.kryo.registrator", "ai.onehouse.lakeloader.LakeLoaderKryoRegistrator")' src/main/scala/ai/onehouse/lakeloader/ChangeDataGenerator.scala
+          
+          # Create KryoRegistrator class file
+          mkdir -p src/main/scala/ai/onehouse/lakeloader
+          cat > src/main/scala/ai/onehouse/lakeloader/LakeLoaderKryoRegistrator.scala << 'EOF'
+          package ai.onehouse.lakeloader
+          
+          import com.esotericsoftware.kryo.Kryo
+          import org.apache.spark.serializer.KryoRegistrator
+          import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+          
+          class LakeLoaderKryoRegistrator extends KryoRegistrator {
+            override def registerClasses(kryo: Kryo): Unit = {
+              kryo.register(classOf[java.util.ArrayList[_]])
+              kryo.register(classOf[ArrayBuffer[_]])
+              kryo.register(classOf[ListBuffer[_]])
+              kryo.register(classOf[scala.collection.immutable.List[_]])
+              kryo.register(classOf[scala.collection.immutable.$colon$colon[_]])
+              kryo.register(classOf[scala.collection.immutable.Nil$.type])
+              kryo.register(classOf[ai.onehouse.lakeloader.ChangeDataGenerator])
+              kryo.register(classOf[ai.onehouse.lakeloader.IncrementalLoader])
+              kryo.register(ai.onehouse.lakeloader.ChangeDataGenerator.KeyTypes.Random.getClass)
+              kryo.register(ai.onehouse.lakeloader.ChangeDataGenerator.KeyTypes.TemporallyOrdered.getClass)
+              kryo.register(ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns.Uniform.getClass)
+              kryo.register(ai.onehouse.lakeloader.ChangeDataGenerator.UpdatePatterns.Zipf.getClass)
+            }
+          }
+          EOF
+          
+          # Fix the lambda serialization in genParallelRDD method
+          sed -i 's/private def genParallelRDD(spark: SparkSession, targetParallelism: Int, start: Long, end: Long): RDD\[Long\] = {/private def genParallelRDD(spark: SparkSession, targetParallelism: Int, start: Long, end: Long): RDD[Long] = {\n    @SerialVersionUID(1L)\n    class MapPartitionsFunction extends Function1[Iterator[Int], Iterator[Long]] with Serializable {\n      override def apply(it: Iterator[Int]): Iterator[Long] = {\n        val partitionStart = it.next() * ((end - start) \/ targetParallelism)\n        (partitionStart to partitionStart + ((end - start) \/ targetParallelism)).iterator\n      }\n    }/g' src/main/scala/ai/onehouse/lakeloader/ChangeDataGenerator.scala
+          
+          # Replace the mapPartitions call with the serializable class
+          sed -i 's/spark.sparkContext.parallelize(0 to targetParallelism, targetParallelism)\n      .mapPartitions { it =>\n        val partitionStart = it.next() * partitionSize\n        (partitionStart to partitionStart + partitionSize).iterator\n      }/spark.sparkContext.parallelize(0 to targetParallelism, targetParallelism).mapPartitionsWithIndex((_, it) => new MapPartitionsFunction().apply(it))/g' src/main/scala/ai/onehouse/lakeloader/ChangeDataGenerator.scala
+      
       - name: Build with Maven
         run: |
-          mvn clean package
+          mvn clean package -DskipTests
           mkdir -p ./artifacts
           cp target/lake-loader-0.1.jar ./artifacts/
           
-      - name: Upload Artifacts
+      - name: Upload JAR
         uses: actions/upload-artifact@v4
         with:
-          name: lake-loader-jar
+          name: fabric-compatible-lake-loader
           path: ./artifacts
