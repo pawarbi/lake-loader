@@ -15,7 +15,7 @@ jobs:
           cp target/lake-loader-0.1.jar ./artifacts/
           
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: lake-loader-jar
           path: ./artifacts
