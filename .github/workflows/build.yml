@@ -30,11 +30,11 @@ jobs:
           mkdir -p src/main/scala/ai/onehouse/lakeloader
           cat > src/main/scala/ai/onehouse/lakeloader/LakeLoaderKryoRegistrator.scala << 'EOF'
           package ai.onehouse.lakeloader
-          
+
           import com.esotericsoftware.kryo.Kryo
           import org.apache.spark.serializer.KryoRegistrator
           import scala.collection.mutable.{ArrayBuffer, ListBuffer}
-          
+
           class LakeLoaderKryoRegistrator extends KryoRegistrator {
             override def registerClasses(kryo: Kryo): Unit = {
               kryo.register(classOf[java.util.ArrayList[_]])
@@ -42,7 +42,7 @@ jobs:
               kryo.register(classOf[ListBuffer[_]])
               kryo.register(classOf[scala.collection.immutable.List[_]])
               kryo.register(classOf[scala.collection.immutable.$colon$colon[_]])
-              kryo.register(classOf[scala.collection.immutable.Nil$.type])
+              kryo.register(scala.collection.immutable.Nil.getClass)  // <-- FIXED LINE
               kryo.register(classOf[ai.onehouse.lakeloader.ChangeDataGenerator])
               kryo.register(classOf[ai.onehouse.lakeloader.IncrementalLoader])
               kryo.register(ai.onehouse.lakeloader.ChangeDataGenerator.KeyTypes.Random.getClass)
