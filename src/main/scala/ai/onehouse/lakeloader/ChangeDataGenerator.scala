@@ -500,12 +500,16 @@ object ChangeDataGenerator {
     }
   }
 
-  private def genParallelRDD(spark: SparkSession, targetParallelism: Int, start: Long, end: Long): RDD[Long] = {
-    val partitionSize = (end - start) / targetParallelism
-    spark.sparkContext.parallelize(0 to targetParallelism, targetParallelism)
-      .mapPartitions { it =>
-        val partitionStart = it.next() * partitionSize
-        (partitionStart to partitionStart + partitionSize).iterator
-      }
+private class PartitionFunc(partitionSize: Long) extends (Iterator[Int] => Iterator[Long]) with Serializable {
+  override def apply(it: Iterator[Int]): Iterator[Long] = {
+    val partitionStart = it.next() * partitionSize
+    (partitionStart to partitionStart + partitionSize).iterator
   }
+}
+
+private def genParallelRDD(spark: SparkSession, targetParallelism: Int, start: Long, end: Long): RDD[Long] = {
+  val partitionSize = (end - start) / targetParallelism
+  spark.sparkContext.parallelize(0 to targetParallelism, targetParallelism)
+    .mapPartitions(new PartitionFunc(partitionSize))
+}
 }
